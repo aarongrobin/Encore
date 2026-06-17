@@ -1,0 +1,35 @@
+opt_out_usage   # no anonymous analytics sent
+default_platform(:ios)
+
+platform :ios do
+  # One command: archive a signed Release build and upload it to TestFlight.
+  #   cd into the project folder, then:  fastlane beta
+  # Auth uses an App Store Connect API key (no Apple ID / 2FA). See SETUP.md.
+  desc "Build the Release archive and upload to TestFlight"
+  lane :beta do
+    api_key = app_store_connect_api_key(
+      key_id:       ENV["ASC_KEY_ID"],
+      issuer_id:    ENV["ASC_ISSUER_ID"],
+      key_filepath: ENV["ASC_KEY_PATH"] || File.expand_path("AuthKey.p8", __dir__),
+      in_house:     false
+    )
+
+    build_app(
+      project:          "Encore.xcodeproj",
+      scheme:           "Encore",
+      configuration:    "Release",
+      export_method:    "app-store",
+      xcargs:           "-allowProvisioningUpdates",
+      output_directory: "build",
+      clean:            true
+    )
+
+    upload_to_testflight(
+      api_key:                           api_key,
+      skip_waiting_for_build_processing: true,   # don't block on Apple processing
+      skip_submission:                   true    # upload only; you control external release
+    )
+
+    UI.success("Uploaded to TestFlight. Apple is now processing the build.")
+  end
+end

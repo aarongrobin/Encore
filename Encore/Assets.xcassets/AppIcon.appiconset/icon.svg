@@ -1,0 +1,98 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Background: warm plum sinking into coral/amber, evoking dusk on old film -->
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0"   stop-color="#3A1B3D"/>
+      <stop offset="0.42" stop-color="#7A2C4A"/>
+      <stop offset="0.74" stop-color="#C04A4E"/>
+      <stop offset="1"   stop-color="#E8794A"/>
+    </linearGradient>
+
+    <!-- Subtle radial warmth from lower-center, like light coming up over a horizon -->
+    <radialGradient id="glow" cx="512" cy="690" r="560" gradientUnits="userSpaceOnUse">
+      <stop offset="0"   stop-color="#FFC27A" stop-opacity="0.55"/>
+      <stop offset="0.5" stop-color="#F2935A" stop-opacity="0.18"/>
+      <stop offset="1"   stop-color="#F2935A" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Print face: warm cream with a faint film tint -->
+    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
+      <stop offset="0" stop-color="#FFF6EC"/>
+      <stop offset="1" stop-color="#FCE6CF"/>
+    </linearGradient>
+
+    <!-- The "photo" window on the top print: a warm sky -->
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1" gradientUnits="objectBoundingBox">
+      <stop offset="0"    stop-color="#F6B26B"/>
+      <stop offset="0.55" stop-color="#F08A5D"/>
+      <stop offset="1"    stop-color="#C75C57"/>
+    </linearGradient>
+
+    <radialGradient id="sun" cx="0.5" cy="0.5" r="0.5" gradientUnits="objectBoundingBox">
+      <stop offset="0"   stop-color="#FFF3D6"/>
+      <stop offset="0.6" stop-color="#FFD98C"/>
+      <stop offset="1"   stop-color="#FFC066"/>
+    </radialGradient>
+
+    <!-- Soft drop shadow for the floating stack -->
+    <filter id="cardShadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="22" stdDeviation="34" flood-color="#1E0E20" flood-opacity="0.35"/>
+    </filter>
+
+    <!-- Gentle grain/vignette overlay -->
+    <radialGradient id="vignette" cx="512" cy="470" r="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0.62" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="1"    stop-color="#1A0A1C" stop-opacity="0.30"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Full-bleed opaque background -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <rect width="1024" height="1024" fill="url(#glow)"/>
+
+  <!--
+    A stack of photo prints fanned into a clean symmetric arc.
+    Two prints splay evenly left and right behind an upright front print
+    = turning back through layered years. The front print holds a sun
+    rising over a horizon = "this day" returning.
+    Stack is scaled up and optically centered on (512, 512).
+    Base card rect (pre-rotation), pivot at its own center (512, 540):
+      x=372 y=330 w=280 h=420  -> center (512,540)
+  -->
+
+  <!-- Back-left card (older year) -->
+  <g filter="url(#cardShadow)" transform="rotate(-17 512 540)">
+    <rect x="372" y="330" width="280" height="420" rx="30" fill="url(#paper)"/>
+    <rect x="372" y="330" width="280" height="420" rx="30" fill="#C07A5A" opacity="0.16"/>
+  </g>
+
+  <!-- Back-right card (older year) -->
+  <g filter="url(#cardShadow)" transform="rotate(17 512 540)">
+    <rect x="372" y="330" width="280" height="420" rx="30" fill="url(#paper)"/>
+    <rect x="372" y="330" width="280" height="420" rx="30" fill="#D2895E" opacity="0.10"/>
+  </g>
+
+  <!-- Front card (today), upright, with the photo window -->
+  <g filter="url(#cardShadow)">
+    <!-- Print border: classic heavier bottom margin -->
+    <rect x="372" y="330" width="280" height="420" rx="30" fill="url(#paper)"/>
+    <!-- Photo window: even top/side margins (32), heavier bottom margin -->
+    <rect x="404" y="362" width="216" height="288" rx="14" fill="url(#sky)"/>
+
+    <!-- Sun rising over a soft horizon, clipped to the window -->
+    <clipPath id="win">
+      <rect x="404" y="362" width="216" height="288" rx="14"/>
+    </clipPath>
+    <g clip-path="url(#win)">
+      <!-- soft horizon band sitting in the lower third -->
+      <rect x="404" y="540" width="216" height="110" fill="#B24E51" opacity="0.55"/>
+      <!-- sun cresting the horizon -->
+      <circle cx="512" cy="560" r="70" fill="url(#sun)"/>
+      <!-- reflected light shimmer on the horizon line -->
+      <ellipse cx="512" cy="636" rx="86" ry="10" fill="#FFE6B0" opacity="0.45"/>
+    </g>
+  </g>
+
+  <!-- Vignette to seat the mark and add film depth -->
+  <rect width="1024" height="1024" fill="url(#vignette)"/>
+</svg>

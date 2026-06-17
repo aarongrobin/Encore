@@ -1,0 +1,5 @@
+app_identifier("com.aarongrobinson.encore")
+team_id("B2X57KKAD3")            # Apple Developer Portal team (DEVELOPMENT_TEAM)
+
+# Auth is via an App Store Connect API key (see fastlane/SETUP.md), so no
+# apple_id / 2FA is needed. itc_team_id is resolved from the API key.
