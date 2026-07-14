@@ -15,8 +15,21 @@ struct PhotoShareView: View {
     @State private var card: UIImage?
     @State private var shareURL: URL?
     @State private var includeLocation = true
+    /// This photo's OWN resolved place (build 39, MAR-40), filled in on appear when the asset has
+    /// its own GPS. Overrides the moment-level caption place so the share is correct per-photo.
+    @State private var resolvedPlace: String?
 
-    private var hasLocation: Bool { caption.placeText?.isEmpty == false }
+    /// The place to print on the share card. Strictly the photo's OWN location: if the asset
+    /// carries no GPS of its own (the typical "shared from someone else" case — re-saved photos
+    /// usually have GPS stripped), show NO place rather than inheriting a sibling photo's city.
+    /// When it does have a location, prefer its freshly-resolved place, falling back to the
+    /// moment caption only until that resolves.
+    private var effectivePlaceText: String? {
+        guard asset.location != nil else { return nil }
+        return resolvedPlace ?? caption.placeText
+    }
+
+    private var hasLocation: Bool { effectivePlaceText?.isEmpty == false }
 
     var body: some View {
         NavigationStack {
@@ -77,6 +90,13 @@ struct PhotoShareView: View {
 
     private func loadAndRender() {
         guard sourceImage == nil else { return }
+        // Resolve THIS photo's own place (nil if it has no GPS of its own). Re-render when it lands.
+        if asset.location != nil {
+            service.resolvePlace(for: asset) { place in
+                if let place { resolvedPlace = place }
+                renderCard()
+            }
+        }
         service.requestImage(for: asset, targetSize: CGSize(width: 1400, height: 1900)) { image in
             sourceImage = image
             renderCard()
@@ -85,9 +105,10 @@ struct PhotoShareView: View {
 
     private func renderCard() {
         guard let sourceImage else { return }
-        let effective = includeLocation
-            ? caption
-            : MomentCaption(yearsAgoText: caption.yearsAgoText, dateText: caption.dateText, placeText: nil)
+        // Use the photo's OWN place (effectivePlaceText), gated by the show-location toggle.
+        let place = includeLocation ? effectivePlaceText : nil
+        let effective = MomentCaption(yearsAgoText: caption.yearsAgoText,
+                                      dateText: caption.dateText, placeText: place)
         let rendered = renderShareCard(image: sourceImage, caption: effective)
         withAnimation(.easeOut(duration: 0.15)) { card = rendered }
 

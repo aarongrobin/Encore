@@ -23,21 +23,22 @@ final class PhotoLibraryService: ObservableObject {
     @Published var calendarAuthorized = false
     @Published var reminderEnabled = false
 
+    /// Data-ready signal, distinct from the actual view swap (build 43, MAR-41). The loading gate
+    /// flips this true once the memories are assembled, the cover is warmed, AND the minimum beat
+    /// has elapsed — but the screen does NOT change to home yet. The loading screen watches this,
+    /// runs its progress bar visibly to 100%, and only THEN calls `finalizeHandoff()` to perform the
+    /// real `.loaded` transition. This is what guarantees the bar always reads full before dismiss.
+    /// Capped by `loadGateTimeout`, so it always fires and the screen can never hang.
+    @Published private(set) var loadingFinished = false
+    /// The assembled memories, held between the `loadingFinished` signal and `finalizeHandoff()`.
+    private var pendingMemories: [YearMemory]?
+
     /// The home cover's peek hero image, decoded at screen resolution BEFORE the loading screen
     /// is dismissed. The home page reads this so it appears with the photo already on screen —
     /// no white placeholder, no async pop-in. Keyed by the asset's localIdentifier so the home
     /// page can confirm it matches the asset it is about to draw.
     @Published private(set) var peekHeroImage: UIImage?
     @Published private(set) var peekHeroAssetID: String?
-
-    /// An AI-picked "cool" memory from a past year, decoded at screen resolution while the
-    /// loading screen is up and shown softly behind the "Finding your memories" text. Picked from
-    /// the FIRST batch of scored photos (biased to people/travel/celebration, lightly randomized)
-    /// so it does not delay the load. Nil until a candidate is scored; the loading screen shows its
-    /// plain state until then, then gently reveals this. Keyed by localIdentifier so the home cover
-    /// can reuse the decode if the teaser happens to be the peek hero.
-    @Published private(set) var teaserImage: UIImage?
-    @Published private(set) var teaserAssetID: String?
 
     private let imageManager = PHCachingImageManager()
     private let locationResolver = LocationResolver()
@@ -183,8 +184,9 @@ final class PhotoLibraryService: ObservableObject {
 
     func loadMemories() {
         state = .loading
-        teaserImage = nil
-        teaserAssetID = nil
+        loadingFinished = false
+        pendingMemories = nil
+        loadStartedAt = Date()
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
@@ -221,14 +223,9 @@ final class PhotoLibraryService: ObservableObject {
                 }
             }
 
-            // Calendar events (main-actor isolated service)
             let allAssets = assetsByYear.flatMap { $0.value }
-            let assetsByID = Dictionary(allAssets.map { ($0.localIdentifier, $0) },
-                                        uniquingKeysWith: { first, _ in first })
 
-            self.scoreAll(allAssets, onBatch: { partial in
-                self.pickAndDecodeTeaser(from: partial, assetsByID: assetsByID)
-            }) { scores in
+            self.scoreAll(allAssets) { scores in
                 Task { @MainActor in
                     let eventsByYear = Dictionary(grouping: self.calendarService.memoryEvents(), by: { $0.year })
                     self.assemble(assetsByYear: assetsByYear, scores: scores, eventsByYear: eventsByYear, calendar: calendar)
@@ -266,29 +263,43 @@ final class PhotoLibraryService: ObservableObject {
 
         guard !usable.isEmpty else { state = .empty; return }
 
-        // GATE (build 36): hold the loading screen until the opening is genuinely wait-free AND the
-        // teaser has had real screen time. The author's note: "Make sure everything loads before
-        // proceeding to the home screen, which will be ok because the waiting screen is more
-        // engaging." We wait on THREE things — the home cover hero decoded, the AI teaser decoded
-        // (so it reads as an engaging backdrop, not a flash), and the warmed front deck cached — so
-        // the first swipe-through is zero-wait. An overall timeout (`loadGateTimeout`) caps the wait
-        // so a huge day / slow iCloud can never hang it. The REST of the deck is background-cached
-        // only AFTER the home appears, so the warm-up doesn't compete with the cover decode.
-        let ordered = deckOrderedAssets(usable)
-        let frontSet = Array(ordered.prefix(deckWarmCount))
+        // GATE (build 36): hold the loading screen until the opening is genuinely wait-free. The
+        // author's note: "Make sure everything loads before proceeding to the home screen, which will
+        // be ok because the waiting screen is more engaging." We wait on TWO things — the home cover
+        // hero decoded and the warmed front deck cached — so the first swipe-through is zero-wait. An
+        // overall timeout (`loadGateTimeout`) caps the wait so a huge day / slow iCloud can never hang
+        // it. The REST of the deck is background-cached only AFTER the home appears, so the warm-up
+        // doesn't compete with the cover decode.
+        let frontSet = Array(deckOrderedAssets(usable).prefix(deckWarmCount))
 
         var proceeded = false
-        let proceed: () -> Void = { [weak self] in
+        // Signal that the data is ready (build 43, MAR-41). We do NOT swap to home here — we stash the
+        // memories and flip `loadingFinished` so the loading screen can run its bar visibly to 100%
+        // first. The real transition happens in `finalizeHandoff()`, called once the bar reads full.
+        let signalReady: () -> Void = { [weak self] in
             guard let self, !proceeded else { return }
             proceeded = true
-            self.state = .loaded(usable)
-            self.startCaching(for: Array(ordered.dropFirst(self.deckWarmCount)))
-            self.resolvePlaceNames(for: usable)
+            self.pendingMemories = usable
+            self.loadingFinished = true
+        }
+        // Signal readiness as soon as loading is genuinely done, with only a short minimum-display
+        // floor so the loading screen reads as intentional rather than flashing (build 40, MAR-41:
+        // "load faster — don't sit on an artificial timer"). If the work finished before the floor,
+        // hold the remainder of `minimumLoadingDisplay`; if it ran long, signal at once.
+        let proceed: () -> Void = { [weak self] in
+            guard let self, !proceeded else { return }
+            let elapsed = Date().timeIntervalSince(self.loadStartedAt)
+            let remaining = self.minimumLoadingDisplay - elapsed
+            if remaining <= 0 {
+                signalReady()
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + remaining, execute: signalReady)
+            }
         }
 
-        // Two of the three gate conditions resolve asynchronously and we proceed when BOTH are in
-        // (hero is the third, awaited inside the group below). The teaser may already be decoded by
-        // now (it's picked from the first scored batch); if it never resolves, the timeout covers it.
+        // Both gate conditions resolve asynchronously and we proceed once BOTH are in: the home cover
+        // hero decoded and the warmed front deck cached, so the first swipe-through is zero-wait. The
+        // minimum-display floor below keeps the loading screen up as a calm beat past this point.
         let group = DispatchGroup()
         group.enter(); group.enter()   // hero, front-deck
         var leftHero = false, leftFront = false
@@ -298,19 +309,25 @@ final class PhotoLibraryService: ObservableObject {
         prefetchHomeCover(for: usable) { leaveHero() }
         warmDeckFront(frontSet) { leaveFront() }
 
-        group.notify(queue: .main) {
-            // Hold a touch longer if the teaser hasn't landed yet, so in the normal case it clearly
-            // displays rather than flashing. Bounded by the overall timeout below.
-            if self.teaserImage != nil {
-                proceed()
-            } else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + self.teaserGraceWait) { proceed() }
-            }
-        }
+        group.notify(queue: .main) { proceed() }
 
-        // Hard cap: whatever is still pending (slow iCloud, a teaser that can't be picked), the home
-        // appears by now so the wait is engaging, not interminable.
+        // Hard cap: whatever is still pending (slow iCloud, a huge day), the home appears by now so the
+        // wait is engaging, not interminable. (Past the cap the minimum-display floor is already met,
+        // so `proceed` commits immediately here.)
         DispatchQueue.main.asyncAfter(deadline: .now() + loadGateTimeout) { proceed() }
+    }
+
+    /// Perform the real loading-screen → home transition (build 43, MAR-41). Called by the loading
+    /// screen ONLY after its progress bar has visibly filled to 100%, so the hand-off never happens
+    /// on a partial bar. Idempotent: the held memories are cleared on first call, so a stray second
+    /// call is a no-op. The heavy background caching + geocoding kick off here, as the home appears.
+    func finalizeHandoff() {
+        guard let usable = pendingMemories else { return }
+        pendingMemories = nil
+        state = .loaded(usable)
+        let ordered = deckOrderedAssets(usable)
+        startCaching(for: Array(ordered.dropFirst(deckWarmCount)))
+        resolvePlaceNames(for: usable)
     }
 
     /// Number of deck photos to warm at full-screen size during the loading screen (build 36). A
@@ -319,11 +336,23 @@ final class PhotoLibraryService: ObservableObject {
     /// stay bounded by `loadGateTimeout` for a huge day.
     private let deckWarmCount = 22
     /// Overall cap on how long the loading screen holds for the gate (build 36). Long enough for the
-    /// teaser to read and the front deck to warm; short enough that a slow iCloud can't hang it.
+    /// front deck to warm; short enough that a slow iCloud can't hang it.
     private let loadGateTimeout: TimeInterval = 9
-    /// If the hero + front deck are ready but the teaser hasn't decoded yet, hold this much longer so
-    /// the teaser clearly shows instead of flashing. Still bounded by `loadGateTimeout`.
-    private let teaserGraceWait: TimeInterval = 1.2
+    /// Overall cap on the on-device scoring pass (build 43 review, MAR-41). Guarantees `scoreAll`'s
+    /// completion always fires — even if a PhotoKit request for a slow/offline iCloud original never
+    /// calls back — so `assemble` (and its own `loadGateTimeout`) is always reached. Unscored assets
+    /// fall back to the neutral 0.5 default in `assemble`.
+    private let scoreAllTimeout: TimeInterval = 6
+    /// Minimum time before the data-ready signal fires (build 43, MAR-41). A deliberate floor — the
+    /// blurred stock photo and the progress bar stay up as a calm beat while the full set loads behind
+    /// the scenes, then hand off without the picture changing. Kept matched to the loading bar's fill
+    /// window (`LoadingProgressBar.window`, also 2.6) so the natural creep is most of the way up when
+    /// the bar then eases the rest of the way to a full 100%. Trimmed from 3.4 (Aaron, 06-30: "a little
+    /// faster") — still a calm, deliberate beat, just a touch quicker. Independent of (and capped by)
+    /// the load gate above: the signal fires only once BOTH loading is done AND this floor has elapsed.
+    private let minimumLoadingDisplay: TimeInterval = 2.6
+    /// When the current load began. Drives the `minimumLoadingDisplay` floor.
+    private var loadStartedAt: Date = .distantPast
 
     /// The deck's photos in the exact order the user pages them: newest year first, each year's
     /// moments in order, each moment's photos chronological — mirroring `MemoryDeckView.rebuild`.
@@ -514,71 +543,40 @@ final class PhotoLibraryService: ObservableObject {
         process(0)
     }
 
-    // MARK: - Loading-screen teaser (on-device AI pick)
-
-    /// Pick a "cool" memory from the first scored batch and decode it for the loading-screen
-    /// backdrop. The score already bakes in the people/travel/celebration bias (PhotoScorer boosts
-    /// faces, beach/mountain/sunset/travel/party/wedding scenes and penalizes screenshots/text), so
-    /// we take the top-scoring non-clutter candidates and pick ONE at random among them. The
-    /// randomness makes the tease feel fresh each launch instead of always surfacing the single
-    /// highest score. Fully on-device; only runs once (guarded on `teaserAssetID`).
-    private func pickAndDecodeTeaser(from scores: [String: PhotoScore],
-                                     assetsByID: [String: PHAsset]) {
-        Task { @MainActor in
-            guard self.teaserAssetID == nil else { return }
-
-            let candidates = scores
-                .filter { !$0.value.isScreenshot && $0.value.score >= 0.5 }
-                .sorted { $0.value.score > $1.value.score }
-                .prefix(6)
-                .compactMap { assetsByID[$0.key] }
-
-            guard let chosen = candidates.randomElement() else { return }
-
-            let scale = UIScreen.main.scale
-            let screenPx = CGSize(width: UIScreen.main.bounds.width * scale,
-                                  height: UIScreen.main.bounds.height * scale)
-            let options = PHImageRequestOptions()
-            options.deliveryMode = .highQualityFormat
-            options.isNetworkAccessAllowed = true
-            options.resizeMode = .exact
-
-            self.teaserAssetID = chosen.localIdentifier
-            self.imageManager.requestImage(for: chosen, targetSize: screenPx,
-                                           contentMode: .aspectFill, options: options) { image, info in
-                let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-                guard !isDegraded, let image else { return }
-                Task { @MainActor in
-                    guard case .loading = self.state else { return }
-                    self.teaserImage = image
-                }
-            }
-        }
-    }
-
     // MARK: - Scoring (off the main thread, throttled)
 
-    /// `onBatch` fires once, on the main actor, as soon as `batchThreshold` photos have been scored
-    /// (or all of them, if there are fewer). It carries the partial score map so the loading screen
-    /// can pick + show an AI teaser EARLY, without waiting for every photo to finish scoring. The
-    /// final `completion` still fires once everything is scored.
+    /// Score every asset on-device (off the main thread, throttled to 4 concurrent decodes). The
+    /// `completion` fires once, on the main actor, when everything is scored.
     private func scoreAll(_ assets: [PHAsset],
-                          batchThreshold: Int = 12,
-                          onBatch: @escaping ([String: PhotoScore]) -> Void = { _ in },
                           completion: @escaping ([String: PhotoScore]) -> Void) {
-        guard !assets.isEmpty else { onBatch([:]); completion([:]); return }
+        guard !assets.isEmpty else { completion([:]); return }
 
         var scores: [String: PhotoScore] = [:]
         let lock = NSLock()
         let group = DispatchGroup()
         let semaphore = DispatchSemaphore(value: 4)
-        var batchFired = false
-        let batchTarget = min(batchThreshold, assets.count)
 
         let options = PHImageRequestOptions()
         options.deliveryMode = .fastFormat
         options.isNetworkAccessAllowed = true
         options.resizeMode = .fast
+
+        // Fire `completion` exactly once: normally when every asset is scored, but also after an
+        // overall timeout so a stuck PhotoKit request (slow/offline iCloud original that never calls
+        // back) can never dead-end the whole load. Any assets not yet scored simply fall back to the
+        // neutral 0.5 default in `assemble`. Without this, `group.notify` could never fire, `assemble`
+        // would never run, its own `loadGateTimeout` would never be scheduled, and the loading screen
+        // would hang forever (build 43 review, MAR-41).
+        var finished = false
+        let finishLock = NSLock()
+        let finishOnce: () -> Void = {
+            finishLock.lock()
+            if finished { finishLock.unlock(); return }
+            finished = true
+            finishLock.unlock()
+            lock.lock(); let snapshot = scores; lock.unlock()
+            DispatchQueue.main.async { completion(snapshot) }
+        }
 
         DispatchQueue.global(qos: .userInitiated).async {
             for asset in assets {
@@ -591,11 +589,7 @@ final class PhotoLibraryService: ObservableObject {
                     let record: (PhotoScore) -> Void = { score in
                         lock.lock()
                         scores[asset.localIdentifier] = score
-                        let fireBatch = !batchFired && scores.count >= batchTarget
-                        if fireBatch { batchFired = true }
-                        let snapshot = fireBatch ? scores : nil
                         lock.unlock()
-                        if let snapshot { Task { @MainActor in onBatch(snapshot) } }
                         semaphore.signal(); group.leave()
                     }
                     guard let image else {
@@ -608,11 +602,12 @@ final class PhotoLibraryService: ObservableObject {
                     PhotoScorer.score(asset: asset, image: image) { score in record(score) }
                 }
             }
-            group.notify(queue: .main) {
-                if !batchFired { onBatch(scores) }
-                completion(scores)
-            }
+            group.notify(queue: .global()) { finishOnce() }
         }
+        // The cap. Past this, whatever scored so far is used and the load proceeds (assemble then
+        // applies its own hero/front-deck gate + `loadGateTimeout`). In-flight requests keep running
+        // harmlessly and just write into an unused snapshot.
+        DispatchQueue.global().asyncAfter(deadline: .now() + scoreAllTimeout) { finishOnce() }
     }
 
     /// Resolve liked photos (stored as local identifiers) back into assets,
@@ -650,5 +645,16 @@ final class PhotoLibraryService: ObservableObject {
             _ = isDegraded
             completion(image)
         }
+    }
+
+    /// Resolve a SINGLE photo's place from its OWN GPS metadata, for the share card (build 39,
+    /// MAR-40). Returns nil when the asset carries no location of its own — which is exactly the
+    /// "shared from someone else" case (re-saved photos from Messages/WhatsApp/AirDrop usually
+    /// have their GPS stripped). Keying strictly on the photo's own coordinate means a shared
+    /// photo never inherits a sibling's city; it shows its real place or none. Same "City, State"
+    /// / "City, State, Country" formatting and home-country rule as the year/moment captions.
+    func resolvePlace(for asset: PHAsset, completion: @escaping (String?) -> Void) {
+        guard let loc = asset.location else { completion(nil); return }
+        locationResolver.placeName(for: loc, completion: completion)
     }
 }

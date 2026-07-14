@@ -18,6 +18,7 @@ final class PreferenceStore {
         static let homeLon = "homeClusterLon"
         static let onboardingComplete = "onboardingComplete"
         static let likedAssets = "likedAssetIDs"
+        static let notificationPromptShown = "notificationPromptShown"
     }
 
     // MARK: Liked photos (local only — we store the asset identifier, never the photo)
@@ -56,6 +57,13 @@ final class PreferenceStore {
     var onboardingComplete: Bool {
         get { defaults.bool(forKey: Keys.onboardingComplete) }
         set { defaults.set(newValue, forKey: Keys.onboardingComplete) }
+    }
+
+    /// Whether we've shown the one-time "turn on a daily reminder" opt-in (build 39, MAR-45).
+    /// Set true after the user makes any choice so it never asks twice.
+    var notificationPromptShown: Bool {
+        get { defaults.bool(forKey: Keys.notificationPromptShown) }
+        set { defaults.set(newValue, forKey: Keys.notificationPromptShown) }
     }
 
     // MARK: Day log — a gentle record of days the user looked back (not streaks)

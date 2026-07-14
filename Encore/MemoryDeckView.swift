@@ -61,6 +61,17 @@ func momentCaption(forYear year: Int) -> MomentCaption {
     return MomentCaption(yearsAgoText: yearsText, dateText: formatter.string(from: date), placeText: nil)
 }
 
+/// Reports the global-space bottom edge of the home date block so the home mosaic can inset beneath
+/// it with a real measurement instead of a magic constant (see `homeMosaicTopInset`). Using the
+/// global frame works because the mosaic page ignores the safe area, so its top is at global y=0 —
+/// the date block's global maxY is exactly the inset the mosaic needs.
+private struct HomeDateBlockBottomKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct MemoryDeckView: View {
     let memories: [YearMemory]
     @ObservedObject var service: PhotoLibraryService
@@ -74,28 +85,29 @@ struct MemoryDeckView: View {
     @State private var currentID: String?
     @State private var sharePicker = false
     @State private var badgeCleared = false
-    /// When true the outer paging ScrollView stops scrolling. We hold this true on the
-    /// home page so the home peek card's own drag — not the ScrollView's paging gesture —
-    /// owns the swipe-up. Without this the paging recognizer hijacks the gesture and the
-    /// deck flips to the first photo before the card can track the finger.
-    @State private var homeScrollLocked = true
-    /// Flipped every time the deck returns to the home page (even without a view teardown) so
-    /// the realized home page can reset its reveal state back to the peek view.
-    @State private var homeReturnSignal = false
-    /// Drives the top chrome (controls + progress) AND the scrubber, DECOUPLED from `onBookend`.
-    /// On the swipe-up reveal the deck swaps from "home" to the first photo at the exact instant
-    /// the finger-tracked expansion finishes, which is also when `onBookend` flips false. If the
-    /// chrome keyed straight off `onBookend` it would fade in and the scrubber would insert ON
-    /// THAT SAME FRAME, so the screen "bumped into place" mid-motion. Instead we hold this false
-    /// through the handoff and flip it true a calm beat later, so the chrome eases in over a
-    /// settled full-screen photo. It drops false immediately on any return to a bookend.
+    /// True once the staged home entrance (mosaic fade + peek pop-up) has played once this session.
+    /// Lives in the stable parent, not in the recyclable `DeckHomePage`, so a FAR return to home
+    /// (the home page was discarded by the LazyVStack and is recreated fresh) lands at rest with the
+    /// peek bobbing instead of replaying the entrance. The near return (home stayed realized) is
+    /// handled separately by `DeckHomePage`'s `onChange(of: isCurrentHome)` → `resetToPeek()`.
+    @State private var homeEntranceDone = false
+    /// Drives the top chrome (controls + progress) AND the scrubber, based on the current page.
+    /// Hidden on the home/end bookends, brought in by `updateChrome` when landing on a real photo.
     @State private var chromeVisible = false
     /// Cancels a pending deferred chrome reveal if we leave the page before it fires.
     @State private var chromeRevealWork: DispatchWorkItem?
-    /// Delay before the top chrome + scrubber ease in after a reveal. Kept a beat AFTER the home
-    /// page's fixed glide (DeckHomePage.revealGlideDuration ≈ 0.78s) so the chrome never appears
-    /// mid-glide. If the glide duration changes, bump this to stay >= glide + ~0.2s.
-    private let chromeRevealDelay: Double = 1.0
+    /// Delay before the chrome (controls + progress + scrubber) eases in when landing on a photo by
+    /// paging (the first photo from home, or swiping back up from the end recap). Snappy.
+    private let returnChromeDelay: Double = 0.15
+    /// Measured top inset for the home mosaic: the global Y of the bottom of the home date block plus
+    /// a gap, fed by `HomeDateBlockBottomKey`. The mosaic's first row always starts cleanly below the
+    /// FULL date block (the persistent title row + serif date + invite subtitle), regardless of how
+    /// long the "N years of memories" string runs or which device's safe-area inset we're on. This
+    /// replaces the old fixed `.padding(.top, 172)`, which the added subtitle line overran and drew on
+    /// top of the photos (build 47, MAR-46 follow-up). The default is a close fallback used only for
+    /// the first layout pass, before the measurement lands (and any settle happens under the entrance
+    /// fade, so it never reads as a jump).
+    @State private var homeMosaicTopInset: CGFloat = 190
 
     // MARK: Derived
 
@@ -111,12 +123,14 @@ struct MemoryDeckView: View {
         guard items.count > 1 else { return 0 }
         return Double(currentIndex) / Double(items.count - 1)
     }
-    private var onBookend: Bool { currentID == "home" || currentID == "end" || currentID == nil }
 
-    /// Scrub stops: every Moment plus the home/end bookends as reachable end caps.
-    /// The thumb can land on any burst; speed only changes what the overlay reveals.
+    /// Scrub stops: every real Moment, and ONLY real moments. The home + end bookends are
+    /// deliberately excluded (build 39, MAR-37) so the timeline/menu spans just the actual
+    /// photos — cleaner mental model, and it stops the "Top"/"Recap" cap cards from being scrub
+    /// targets. Home/end are reached by swiping, not by the scrubber. The thumb can land on any
+    /// moment; speed only changes what the overlay reveals.
     private var momentStops: [Int] {
-        bursts.indices.filter { i in bursts[i].year != nil || i == 0 || i == bursts.count - 1 }
+        bursts.indices.filter { i in bursts[i].year != nil }
     }
 
     private var totalPhotos: Int { allVisible.count }
@@ -157,6 +171,25 @@ struct MemoryDeckView: View {
         return bestPhotoOverall
     }
 
+    /// The home cover's date block, rendered directly beneath the persistent "On this day" title row
+    /// (which lives in the top chrome). Title above, date beneath: one well-set top block. The full
+    /// weekday + month/day reads cleaner than the old bare "June 26". Only shown on home.
+    private var homeDateBlock: some View {
+        let f = DateFormatter(); f.dateFormat = "EEEE, MMMM d"
+        let yc = memories.count
+        return VStack(alignment: .leading, spacing: 3) {
+            Text(f.string(from: Date()))
+                .font(.system(size: 30, design: .serif).weight(.semibold))
+                .foregroundStyle(.white)
+                .minimumScaleFactor(0.7)
+                .lineLimit(1)
+            Text("\(yc) \(yc == 1 ? "year" : "years") of memories, waiting")
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.6))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             Color.black.ignoresSafeArea()
@@ -172,17 +205,51 @@ struct MemoryDeckView: View {
             }
             .scrollTargetBehavior(.paging)
             .scrollPosition(id: $currentID)
-            .scrollDisabled(homeScrollLocked)
             .ignoresSafeArea()
 
-            VStack(spacing: 16) {
+            // Persistent top chrome. The title + gallery + menu row is the SAME parent-owned element
+            // on every page (home and every photo), so it can never jump position between screens —
+            // it is laid out once at the safe-area top and just stays there. Only what sits BENEATH
+            // the row changes: the home date block on home, the progress track on photos. The row
+            // itself never moves. (Build 46, MAR-46: this replaces the old setup where the home cover
+            // drew its own bar at a different Y, which made the controls jump on the first swipe.)
+            VStack(alignment: .leading, spacing: 0) {
                 MemoryControlsBar(mode: $mode, service: service,
                                   hiddenCount: hiddenCount, onReviewHidden: onReviewHidden,
                                   dark: true)
+                    // Hidden only on the end recap (it has its own layout). Pure opacity — never a move.
+                    .opacity(currentID == "end" ? 0 : 1)
+                    .animation(.easeInOut(duration: 0.25), value: currentID)
+                    // opacity 0 alone still hit-tests in SwiftUI, so the invisible bar would catch
+                    // taps over the recap — gate hit-testing to when it's actually shown.
+                    .allowsHitTesting(currentID != "end")
+
+                // Home-only date block: the row's "On this day" title sits above it, the date and
+                // invite copy beneath — one clean top block. It pages away with home as the first
+                // photo comes in; the title row above it stays put.
+                if currentID == "home" {
+                    homeDateBlock
+                        .padding(.horizontal, 18)
+                        .padding(.top, 10)
+                        // Report the block's bottom edge so the mosaic insets beneath it by measurement,
+                        // not by a constant — the subtitle line can never overlap the photos again.
+                        .background(
+                            GeometryReader { proxy in
+                                Color.clear.preference(key: HomeDateBlockBottomKey.self,
+                                                       value: proxy.frame(in: .global).maxY)
+                            }
+                        )
+                        .transition(.opacity)
+                        .allowsHitTesting(false) // purely decorative — don't swallow taps on the mosaic
+                }
+
                 ProgressTrack(progress: progress, position: photoPosition, total: totalPhotos)
+                    .padding(.top, 16)
+                    .opacity(chromeVisible ? 1 : 0)
+                    .animation(.easeInOut(duration: 0.28), value: chromeVisible)
+                    // Laid out (and faintly hittable) even when hidden on home — gate hit-testing too.
+                    .allowsHitTesting(chromeVisible)
             }
-            .opacity(chromeVisible ? 1 : 0)
-            .animation(.easeInOut(duration: 0.28), value: chromeVisible)
 
             if chromeVisible && momentStops.count >= 2 {
                 BurstScrubber(bursts: bursts,
@@ -197,23 +264,21 @@ struct MemoryDeckView: View {
         .onChange(of: currentID) { old, new in
             // Any scroll away from the opening page counts as an interaction.
             if old != nil, new != old { clearBadgeOnce() }
-            // Re-lock the moment we land back on home so the next swipe-up is owned by the
-            // peek card again, not the paging recognizer. Toggle the return signal so the
-            // (possibly still-realized) home page resets its reveal state to the peek view.
-            if new == "home" {
-                homeScrollLocked = true
-                homeReturnSignal.toggle()
-            }
             updateChrome(for: new)
+        }
+        .onPreferenceChange(HomeDateBlockBottomKey.self) { bottom in
+            // Keep the last good measurement when home is off-screen (the preference reverts to 0 once
+            // the date block is no longer in the tree), so the realized home page never flashes to a
+            // wrong inset on the way back.
+            if bottom > 0 { homeMosaicTopInset = bottom + 20 }
         }
         .sheet(isPresented: $sharePicker) {
             MomentSharePicker(moments: allMoments, service: service)
         }
     }
 
-    /// Show/hide the top chrome + scrubber, decoupled from the reveal motion. Landing on a
-    /// bookend (home/end) hides it at once. Landing on a real photo DEFERS the reveal a beat so
-    /// it eases in over a settled photo instead of bumping in on the same frame as the handoff.
+    /// Show/hide the top chrome + scrubber based on the current page. Landing on a bookend
+    /// (home/end) hides it at once. Landing on a real photo by paging brings it in promptly.
     private func updateChrome(for id: String?) {
         chromeRevealWork?.cancel()
         let onBookendNow = id == "home" || id == "end" || id == nil
@@ -226,14 +291,7 @@ struct MemoryDeckView: View {
             withAnimation(.easeInOut(duration: 0.28)) { chromeVisible = true }
         }
         chromeRevealWork = work
-        // The reveal writes currentID at the START of the expansion (build 32 reorder) and the
-        // open is now a fixed gentle glide of ~0.78s (DeckHomePage.revealGlideDuration, build 36),
-        // so wait out the full glide PLUS a beat before easing the chrome in. Otherwise the menu /
-        // progress bar / scrubber start appearing while the photo is still gliding up, which reads
-        // as the swipe-up jerk. This MUST stay >= the glide duration + a beat (0.78 + ~0.22 = 1.0).
-        // This delay only gates the first false->true (the reveal); normal deck navigation keeps
-        // the chrome already visible.
-        DispatchQueue.main.asyncAfter(deadline: .now() + chromeRevealDelay, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + returnChromeDelay, execute: work)
     }
 
     /// Clear the notification badge the first time the user interacts with the deck.
@@ -311,36 +369,17 @@ struct MemoryDeckView: View {
                          yearCount: memories.count,
                          tiles: mosaicTiles,
                          firstAsset: firstPhoto?.asset,
-                         firstTargetID: firstPhoto.map { "p-" + $0.id } ?? "end",
+                         topInset: homeMosaicTopInset,
                          service: service,
                          mode: $mode,
                          hiddenCount: hiddenCount,
                          onReviewHidden: onReviewHidden,
                          onInteract: { clearBadgeOnce() },
-                         // PRE-POSITION (fires at the START of the reveal spring, while the
-                         // ScrollView is still scroll-locked and the reveal card is covering the
-                         // screen). Programmatically settle the paging ScrollView onto the first
-                         // photo's page boundary NOW, inside a disablesAnimations transaction. The
-                         // reveal card hides this reposition, so it is invisible — and because the
-                         // ScrollView is already parked there, the later unlock causes no paging
-                         // settle. This is what kills the "bumps into place" second motion.
-                         onRevealPrepare: { targetID in
-                             if let idx = indexByID[targetID], idx < items.count,
-                                case .photo(let p, _) = items[idx] {
-                                 service.prioritize([p.asset])
-                             }
-                             var tx = Transaction(); tx.disablesAnimations = true
-                             withTransaction(tx) { currentID = targetID }
-                         },
-                         // UNLOCK (fires AFTER the reveal spring has finished). The ScrollView is
-                         // already parked on the first photo from onRevealPrepare, so flipping
-                         // scrollDisabled false here produces NO settle/jump. Done inside a
-                         // disablesAnimations transaction for the same reason.
-                         onReveal: {
-                             var tx = Transaction(); tx.disablesAnimations = true
-                             withTransaction(tx) { homeScrollLocked = false }
-                         },
-                         returnedToHome: homeReturnSignal)
+                         // A tap on the peek affordance advances to the first photo with a normal
+                         // animated scroll. Swipes are native paging, owned by the outer ScrollView.
+                         onAdvance: { jump(toID: firstPhoto.map { "p-" + $0.id } ?? "end", animated: true) },
+                         homeEntranceDone: $homeEntranceDone,
+                         isCurrentHome: currentID == "home")
         case .event(let event, let yearsAgo):
             EventPageView(event: event, yearsAgoText: yearsAgo)
         case .photo(let photo, let caption):
@@ -528,29 +567,28 @@ private struct DeckHomePage: View {
     let yearCount: Int
     let tiles: [(asset: PHAsset, year: Int)]
     let firstAsset: PHAsset?
-    let firstTargetID: String
+    /// Top inset for the mosaic, measured by the parent from the live home date block so the grid's
+    /// first row always clears the title row + serif date + invite subtitle (no magic constant).
+    let topInset: CGFloat
     let service: PhotoLibraryService
     let mode: Binding<MemoryViewMode>
     let hiddenCount: Int
     let onReviewHidden: () -> Void
     let onInteract: () -> Void
-    /// Fired at the START of the reveal spring, while the ScrollView is still scroll-locked and
-    /// the reveal card covers the screen. The parent pre-positions the paging ScrollView onto the
-    /// first photo's page boundary (un-animated), hidden behind the full-screen card.
-    let onRevealPrepare: (String) -> Void
-    /// Fired AFTER the reveal spring finishes. The parent re-enables scrolling (un-animated); the
-    /// ScrollView is already parked on the first photo, so there is no second settle motion.
-    let onReveal: () -> Void
-    /// The parent toggles this on every return-to-home. The home page can stay realized in the
-    /// LazyVStack across a reveal, so onAppear is not guaranteed to re-fire; observing this
-    /// guarantees the reveal state resets and the card returns to its peek state every time.
-    let returnedToHome: Bool
+    /// Tap on the peek affordance: advance to the first photo with a normal animated scroll.
+    let onAdvance: () -> Void
+    /// Lives in the stable parent. True once the staged entrance has played once this session, so a
+    /// FAR return (this page recreated fresh by the LazyVStack) lands at rest with no replay.
+    @Binding var homeEntranceDone: Bool
+    /// True when home is the deck's current page (parent passes `currentID == "home"`). The home
+    /// page lives in a LazyVStack and can stay realized across a return, so onAppear is not
+    /// guaranteed to re-fire; observing this resets the card to its peek/bob state on every return.
+    let isCurrentHome: Bool
 
     /// Automatic idle drift. Toggles between two `idleOffset` endpoints under a repeatForever
     /// ease so the peeking photo gently rises and settles ON ITS OWN as a "swipe me up" hint.
     /// This drives its own dedicated `.offset(y:)` transform layer, fully decoupled from the
-    /// drag/reveal offset so the two transforms never share a value or fight an animation.
-    /// Suppressed while the finger is down or a reveal is committing.
+    /// entrance and rest offsets so the transforms never share a value or fight an animation.
     @State private var idleLifted = false
     /// One-shot entrance: header + mosaic ease in on appear.
     @State private var entered = false
@@ -560,42 +598,11 @@ private struct DeckHomePage: View {
     @State private var peekEntered = false
     @State private var shareSelection: ShareSelection?
 
-    /// Finger-tracked vertical translation of the peeking photo (points). Negative = up.
-    /// The photo and its overlaid affordance share this one offset, so they move 1:1.
-    @GestureState private var dragOffset: CGFloat = 0
-
-    /// Reveal progress, 0 = peek at rest, 1 = photo fully expanded to full screen. On
-    /// release past threshold it animates to 1 (continuous expansion); a tap also drives
-    /// it to 1.
-    @State private var revealProgress: CGFloat = 0
-    /// True from the moment a commit starts until the parent has swapped pages, so the idle
-    /// bob and the drag handler stand down and let the expansion run uninterrupted.
-    @State private var revealing = false
-    /// True while the home page is the settled, at-rest visible page (its top edge sits at the
-    /// screen top). Driven by the geometry probe so the reset fires on EVERY return path —
-    /// including the interactive swipe-down, which the parent's `currentID` signal can miss.
-    @State private var atRest = false
-    /// True once the home page has completed its staged entrance at least once. The geometry
-    /// probe's reset is suppressed until then so the FIRST settle (home is already at rest on
-    /// launch) does not short-circuit the staged pop-up by forcing the card straight to peek.
-    @State private var hasEnteredOnce = false
-
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 6), count: 3)
 
-    /// True only when the page is fully at rest: no finger down, no reveal committing, nothing
-    /// expanded. This is the single condition that arms/disarms the idle drift (see the
-    /// `onChange(of: isIdle)` owner in `body`). Mirrors the local `idleActive` used for clarity
-    /// inside the layout, but lives here so the modifier can observe it.
-    private var isIdle: Bool {
-        isIdleEligible && peekEntered
-    }
-
-    /// Same as `isIdle` but without the `peekEntered` requirement: true when nothing is being
-    /// dragged, revealed, or committed. The staged entrance uses this to confirm it is still
-    /// safe to pop the peek up (the user hasn't started interacting during the entrance beat).
-    private var isIdleEligible: Bool {
-        dragOffset == 0 && !revealing && revealProgress == 0
-    }
+    /// True once the peek card has finished its entrance and is at its resting slice. This is the
+    /// single condition that arms/disarms the idle drift (see the `onChange(of: isIdle)` owner).
+    private var isIdle: Bool { peekEntered }
 
     // MARK: Tunable feel constants
     /// Height of the photo slice that peeks above the bottom edge at rest. The photo is
@@ -606,69 +613,31 @@ private struct DeckHomePage: View {
     private let idleTravel: CGFloat = 15
     /// Calm period for one half of the idle rise/settle cycle.
     private let idleDuration: Double = 1.5
-    /// How far up the finger must carry the photo (points) for the expansion to reach full
-    /// screen. Drag distance maps linearly onto reveal progress over this span.
-    private let pullDistance: CGFloat = 260
-    /// Fraction of pullDistance past which release completes the reveal to the full photo.
-    private let pullThreshold: CGFloat = 0.4
-    /// THE single tunable for the open feel (build 36). Once the user clearly intends to open,
-    /// the photo glides 0→1 to full screen over this fixed duration with a gentle easeInOut,
-    /// DECOUPLED from how fast the finger flicked. A hard flick can no longer shoot it up: the
-    /// trigger fires, finger-tracking stops, and this fixed glide always runs. Calm ~0.78s.
-    private let revealGlideDuration: Double = 0.78
-    /// While the finger is still down (pre-trigger) the photo moves only this fraction of the
-    /// finger travel, so even the tracked portion feels gentle and damped rather than 1:1.
-    private let revealTrackRatio: CGFloat = 0.45
-    /// Upward finger travel (points) past which we TRIGGER the glide — a modest, deliberate pull
-    /// rather than the full pullDistance. Once crossed, `completeReveal` runs the fixed glide and
-    /// 1:1 tracking is abandoned for the rest of the open.
-    private let revealTriggerDistance: CGFloat = 56
-    /// Upward flick velocity (points/sec) that also triggers the glide even on a short, fast
-    /// flick — so a quick intentional flick opens, but still via the SAME calm glide, never fast.
-    private let revealTriggerVelocity: CGFloat = 320
 
     var body: some View {
         GeometryReader { geo in
-            // Live reveal fraction: the committed glide progress, or the DAMPED finger pull —
-            // whichever is larger. Pre-trigger the finger only moves the photo `revealTrackRatio`
-            // of its travel (a gentle, partial follow), so even before the glide fires the motion
-            // is calm. The moment the trigger fires, `revealProgress` is driven by the fixed
-            // easeInOut glide and that wins, so a hard flick can never shoot the photo up — the
-            // open is always the same deliberate ~0.78s glide regardless of flick speed.
-            let liveReveal = max(revealProgress,
-                                 min(max(-dragOffset / pullDistance, 0), 1) * revealTrackRatio)
-            // The photo is laid out ONCE at full screen height (never relaid out). At rest it is
-            // pushed DOWN by `restPush` so only its top `peekHeight` slice shows above the bottom
-            // edge; as the reveal grows it rides UP to 0 and fills the screen. Driving the reveal
-            // with this single GPU `.offset` (instead of animating the frame height every frame)
-            // is what makes the motion smooth.
+            // The peek photo is laid out at full screen height and pushed DOWN by `restPush` so
+            // only its top `peekHeight` slice shows above the bottom edge. This is a static rest
+            // position: the home→first-photo move is native paging (the outer ScrollView slides this
+            // whole page away with the same physics as photo → photo), so there is no reveal
+            // transform driving the photo up.
             let restPush = geo.size.height - peekHeight
-            // Small downward give so the peek can't be pushed noticeably below its rest slice.
-            let downGive = max(min(dragOffset, 7), 0) * (1 - liveReveal)
-            // One vertical offset for the whole reveal: restPush (peek) → 0 (full screen) as
-            // liveReveal → 1. During the drag liveReveal is the finger fraction (tracks the thumb
-            // 1:1, un-animated because dragOffset is @GestureState); on release revealProgress
-            // takes over and the spring keyed on it carries the motion to completion.
-            let revealTranslate = restPush * (1 - liveReveal) + downGive
-            // The drift is keyed SOLELY on `idleLifted`, the single source the repeatForever
+            // The idle drift is keyed SOLELY on `idleLifted`, the single source the repeatForever
             // animation observes. It re-arms via the isIdle owner (see onChange below) so the
             // autoreversing loop restarts cleanly every time the page returns to idle.
             let idleOffset: CGFloat = idleLifted ? -idleTravel : 0
-            // Staged entrance: until the peek has entered, park the card fully below its rest
-            // slice so it sits off-screen, then spring to 0 (its resting peek). This is its own
-            // transform layer so it never shares a value with the idle or reveal transforms.
+            // Staged entrance: until the peek has entered, park the card fully below its rest slice
+            // so it sits off-screen, then spring to 0 (its resting peek). This is its own transform
+            // layer so it never shares a value with the idle transform.
             let entranceOffset: CGFloat = peekEntered ? 0 : (peekHeight + 24)
-            // The affordance overlay fades as the photo takes over the screen.
-            let affordanceOpacity = Double(1 - min(liveReveal * 1.6, 1))
 
             ZStack(alignment: .bottom) {
                 Color.black
 
                 VStack(spacing: 20) {
-                    header
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 116)
-
+                    // No header lives on this page anymore. The title + date + menu/gallery are the
+                    // parent-owned persistent top chrome, overlaid above this page, so the mosaic just
+                    // clears it with a fixed top inset.
                     LazyVGrid(columns: columns, spacing: 6) {
                         ForEach(Array(tiles.prefix(12).enumerated()), id: \.element.asset.localIdentifier) { idx, tile in
                             Button {
@@ -708,6 +677,10 @@ private struct DeckHomePage: View {
                         }
                     }
                     .padding(.horizontal, 16)
+                    // Measured by the parent from the live date block (title row + serif date + invite
+                    // copy). Layout-driven, so a longer "N years of memories" string or a different
+                    // safe-area inset can never push the subtitle onto the photos again.
+                    .padding(.top, topInset)
 
                     Spacer(minLength: 0)
                 }
@@ -715,13 +688,12 @@ private struct DeckHomePage: View {
                 .opacity(entered ? 1 : 0)
                 .animation(.easeOut(duration: 0.5), value: entered)
 
-                // The peeking photo — the visual swipe-up affordance. It no longer owns the
-                // gesture; the reveal is driven by the full-page `revealGesture` so a swipe
-                // anywhere works, while a tap still falls through to the mosaic tile buttons.
-                // Laid out at FULL height; the reveal is a pure GPU `.offset` slide (see
-                // revealTranslate) rather than a per-frame frame-height change, so it is smooth.
-                peekPhoto(width: geo.size.width, height: geo.size.height,
-                          affordanceOpacity: affordanceOpacity)
+                // The peeking photo — the visual swipe-up affordance and the home's resting card.
+                // It owns no gesture: a swipe anywhere on the page is native paging (the outer
+                // ScrollView pages home → first photo with the same physics as photo → photo), and a
+                // tap on the card advances via `onAdvance`. Laid out at full height and parked at its
+                // peek slice by the offsets below.
+                peekPhoto(width: geo.size.width, height: geo.size.height)
                     // Staged-entrance transform: the card springs up from below the bottom edge
                     // into its resting peek slice as the final beat of the home open. Its own
                     // layer + its own spring, keyed solely on `peekEntered`, so it can't fight
@@ -733,53 +705,12 @@ private struct DeckHomePage: View {
                     .offset(y: idleOffset)
                     .animation(.easeInOut(duration: idleDuration).repeatForever(autoreverses: true),
                                value: idleLifted)
-                    // Single reveal transform. Finger changes (dragOffset / @GestureState) pass
-                    // through DAMPED (revealTrackRatio) and un-animated for a gentle partial
-                    // follow; only the committed glide is animated — keyed on revealProgress — so
-                    // there is no competing height relayout. This implicit animation governs the
-                    // revealProgress 0→1 change driven by completeReveal: a fixed, gentle easeInOut
-                    // of `revealGlideDuration` so the photo always glides up calmly and elegantly,
-                    // DECOUPLED from flick speed. A hard flick can no longer shoot it up (build 36).
-                    .offset(y: revealTranslate)
-                    .animation(.easeInOut(duration: revealGlideDuration), value: revealProgress)
+                    // Static rest push: parks the card so only its top peek slice shows. No reveal
+                    // transform — the page itself scrolls away under native paging.
+                    .offset(y: restPush)
             }
             .frame(width: geo.size.width, height: geo.size.height)
-            .background(
-                // Scroll-position probe. The page is sized to the scroll container, so its global
-                // top edge sits at ~0 ONLY when home is the settled, at-rest visible page. This
-                // fires on every return path the `currentID` signal can miss — most importantly
-                // the interactive swipe-down back to home — so the reset never needs a nudge.
-                GeometryReader { pageGeo in
-                    Color.clear.preference(key: HomeRestKey.self,
-                                           value: pageGeo.frame(in: .global).minY)
-                }
-            )
-            .onPreferenceChange(HomeRestKey.self) { minY in
-                // Threshold is generous (8pt, not 1pt): a .paging settle can park a pixel or
-                // two off zero, and a too-tight check would intermittently miss the reset and
-                // reintroduce the "needs a nudge" bug. The next page is a full screen away, so
-                // any value well under half a screen is safe from false positives.
-                let nowAtRest = abs(minY) < 8
-                guard nowAtRest != atRest else { return }
-                atRest = nowAtRest
-                // NEVER reset mid-reveal. Pre-positioning the ScrollView onto the first photo
-                // (onRevealPrepare, fired from completeReveal) moves home off the settled page
-                // WHILE the reveal spring is still running. Without this guard an intermediate
-                // settle could fire resetToPeek() and collapse the reveal. Only allow the
-                // return-to-home reset when no reveal is in progress.
-                // Skip the reset on the very first settle so the staged entrance (onAppear) owns
-                // the first pop-up; only on genuine RETURNS to home does the probe snap the card
-                // straight back to its resting peek.
-                if nowAtRest && hasEnteredOnce && !revealing { resetToPeek() }
-            }
             .contentShape(Rectangle())
-            .simultaneousGesture(revealGesture)
-            .overlay(alignment: .top) {
-                MemoryControlsBar(mode: mode, service: service,
-                                  hiddenCount: hiddenCount, onReviewHidden: onReviewHidden,
-                                  dark: true)
-                    .padding(.top, 54)
-            }
             .overlay(alignment: .bottomTrailing) {
                 Text(appVersionString())
                     .font(.system(size: 9))
@@ -788,12 +719,10 @@ private struct DeckHomePage: View {
             }
         }
         .onChange(of: isIdle) { _, idle in
-            // SINGLE owner of arming `idleLifted`. Whenever the page returns to the idle state
-            // (finger lifts, a sub-threshold pull springs back, a reveal is abandoned), disarm
-            // then re-arm on the next runloop so the repeatForever ease restarts cleanly from
-            // rest rather than snapping to an endpoint and freezing. While suppressed, settle to
-            // rest (0). Because arming lives only here, an in-flight reveal (isIdle == false)
-            // can never have the drift set true underneath it.
+            // SINGLE owner of arming `idleLifted`. Whenever the peek card reaches its resting slice
+            // (after the entrance, or on return to home), disarm then re-arm on the next runloop so
+            // the repeatForever ease restarts cleanly from rest rather than snapping to an endpoint
+            // and freezing. While not idle, settle to rest (0).
             if idle {
                 idleLifted = false
                 DispatchQueue.main.async { if isIdle { idleLifted = true } }
@@ -801,31 +730,39 @@ private struct DeckHomePage: View {
                 idleLifted = false
             }
         }
-        .onChange(of: returnedToHome) { _, _ in
-            // The home page lives in a LazyVStack and may stay realized across a reveal, so
-            // scrolling back to home does not reliably re-fire onAppear. The parent flips this
-            // signal on every return-to-home; funnel through the single reset so the card always
-            // returns to its peek state. (The geometry probe above covers the interactive
-            // swipe-down that this signal can miss; this is the belt-and-suspenders path.)
-            resetToPeek()
+        .onChange(of: isCurrentHome) { _, nowHome in
+            // The home page lives in a LazyVStack and may stay realized after the deck pages off it,
+            // so scrolling back to home does not reliably re-fire onAppear. When the deck pages back
+            // onto home (native swipe-down, scrub-to-top, "Back to the start"), reset the card to
+            // its resting peek + bob.
+            if nowHome { resetToPeek() }
         }
         .onAppear {
-            // Staged entrance, once per realized appear: header + mosaic ease in first
-            // (`entered`), then as the final beat the peek card springs up from below the
-            // bottom edge into its resting peek slice (`peekEntered`), which in turn arms the
-            // idle bob via the isIdle gate. The hero is preloaded, so when the card pops up it
-            // already shows the photo — no white.
+            // FAR return: the home page was discarded by the LazyVStack while the user was deep in
+            // the deck and is now recreated fresh ("Back to the start", scrub-to-top). isCurrentHome
+            // is already true, so onChange(of:) never fires — only this onAppear runs. Land the cover
+            // at rest with NO replay: mosaic present and peek card at its slice, both set inside a
+            // disablesAnimations transaction so the fade + spring don't play. The idle bob arms via
+            // the isIdle owner (peekEntered false→true).
+            if homeEntranceDone {
+                var tx = Transaction(); tx.disablesAnimations = true
+                withTransaction(tx) {
+                    entered = true
+                    peekEntered = true
+                }
+                return
+            }
+            // First realized appear this session: play the staged entrance exactly once. Header +
+            // mosaic ease in (`entered`), then as the final beat the peek card springs up from below
+            // the bottom edge into its resting slice (`peekEntered`), which arms the idle bob via the
+            // isIdle gate. The hero is preloaded, so when the card pops up it already shows the photo.
+            homeEntranceDone = true
             entered = true
-            revealing = false
-            revealProgress = 0
             if !peekEntered {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-                    guard isIdleEligible else { return }
+                    guard !peekEntered else { return }
                     peekEntered = true
-                    hasEnteredOnce = true
                 }
-            } else {
-                hasEnteredOnce = true
             }
         }
         .sheet(item: $shareSelection) { sel in
@@ -833,101 +770,28 @@ private struct DeckHomePage: View {
         }
     }
 
-    /// THE single reset. Whenever home becomes the settled page (fresh launch, swipe-up then
-    /// swipe-back-down, any scroll, relaunch) this returns the card to its peek state: reveal
-    /// cleared so `liveReveal` falls to 0 and the photo sits at peek, and the idle drift
-    /// re-armed (disarm now, arm next runloop) so the autoreversing loop restarts cleanly and
-    /// the affordance + photo move together. No nudge is ever required.
+    /// THE single reset. Whenever home becomes the current page again (fresh launch, native
+    /// swipe-down, scrub-to-top, relaunch) this returns the card to its resting peek and re-arms
+    /// the idle drift (disarm now, arm next runloop) so the autoreversing bob restarts cleanly.
     private func resetToPeek() {
         idleLifted = false
-        revealing = false
-        revealProgress = 0
-        // On returns to home (swipe-down, scrub-to-top) we do NOT replay the pop-up entrance —
-        // the card belongs at its resting peek with the photo present and bobbing immediately.
-        // Only the genuine first appear (peekEntered still false there) stages the pop-up.
+        // Returns to home do NOT replay the pop-up entrance — the card belongs at its resting peek
+        // with the photo present and bobbing immediately. Only the first appear stages the pop-up.
         peekEntered = true
         DispatchQueue.main.async { if isIdle { idleLifted = true } }
-    }
-
-    /// Drive the photo the rest of the way to full screen as one continuous expansion, then
-    /// hand off to the parent. The photo is already covering the screen when the handoff
-    /// fires, so swapping the deck onto the first photo underneath is invisible.
-    ///
-    /// `fromProgress` is the DAMPED live reveal fraction at the instant the glide is triggered
-    /// (release past threshold, or the in-drag trigger). We SEED `revealProgress` to it (without
-    /// animation) before gliding to 1, so `liveReveal` is continuous across the handoff. Without
-    /// the seed, `dragOffset` snaps to 0 the moment the gesture ends while `revealProgress` is
-    /// still 0, so `liveReveal` momentarily collapses to the peek and the glide restarts from
-    /// there — that was the hiccup near the top.
-    private func completeReveal(fromProgress: CGFloat) {
-        guard !revealing else { return }
-        revealing = true
-        var tx = Transaction(); tx.disablesAnimations = true
-        withTransaction(tx) { revealProgress = min(max(fromProgress, 0), 1) }
-        // PRE-POSITION the paging ScrollView onto the first photo NOW, while it is still
-        // scroll-locked and the reveal card covers the screen. The parent writes currentID
-        // un-animated, so the ScrollView settles to that page boundary invisibly. `revealing`
-        // is true here, so the geometry probe's reset is suppressed even though home is no
-        // longer the settled page (see onPreferenceChange guard).
-        onRevealPrepare(firstTargetID)
-        // The fixed glide (build 36). A single gentle easeInOut of `revealGlideDuration`, fully
-        // DECOUPLED from flick velocity: once we are here, the finger no longer drives the motion
-        // (revealProgress wins in liveReveal), so the photo always glides up calmly over ~0.78s,
-        // never fast, even on a hard flick. `revealGlideDuration` is the single source of truth so
-        // the handoff delay below — and the chrome reveal delay in the parent — can't desync.
-        let revealDuration = revealGlideDuration
-        withAnimation(.easeInOut(duration: revealDuration)) { revealProgress = 1 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + revealDuration) {
-            // Only hand off if the reveal is still in flight. If anything cleared `revealing`
-            // in this window (e.g. a reset), do not force the unlock.
-            guard revealing else { return }
-            // The spring has landed (card fills the screen) and the ScrollView is already parked
-            // on the first photo, so unlocking now produces no second settle. The MemoryPageView
-            // beneath occupies the exact same rect the reveal card showed: zero second motion.
-            onReveal()
-        }
-    }
-
-    // MARK: Header
-
-    private var header: some View {
-        VStack(spacing: 8) {
-            Text("On this day")
-                .font(.footnote.weight(.semibold))
-                .tracking(1.5)
-                .foregroundStyle(Color.accentColor)
-                .textCase(.uppercase)
-
-            Text(dateLine)
-                .font(.system(size: 40, design: .serif).weight(.semibold))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-                .minimumScaleFactor(0.7)
-                .lineLimit(1)
-
-            Capsule()
-                .fill(Color.accentColor.opacity(0.9))
-                .frame(width: 34, height: 3)
-                .padding(.top, 2)
-
-            Text("\(yearCount) \(yearCount == 1 ? "year" : "years") of memories, waiting")
-                .font(.subheadline)
-                .foregroundStyle(.white.opacity(0.65))
-        }
     }
 
     // MARK: Peek — the first photo peeking up with its affordance overlaid
 
     /// The first photo, pinned to the bottom and top-aligned so its TOP edge always shows.
     /// The grabber pill + "Swipe up to begin" label sit OVER the photo (on a subtle bottom
-    /// scrim for legibility) — there is no black band above the picture. This view is purely
-    /// the visual swipe-up affordance now; the reveal gesture lives on the full-page layer
-    /// (`revealGesture`) so a swipe anywhere on home triggers it.
-    private func peekPhoto(width: CGFloat, height: CGFloat, affordanceOpacity: Double) -> some View {
+    /// scrim for legibility) — there is no black band above the picture. This view is the visual
+    /// swipe-up affordance and the home's resting card; swiping up pages it away natively.
+    private func peekPhoto(width: CGFloat, height: CGFloat) -> some View {
         ZStack(alignment: .top) {
             Group {
                 if let firstAsset {
-                    // The peek photo expands to FULL SCREEN on reveal. Load it at SCREEN resolution
+                    // The peek photo is laid out at FULL SCREEN size. Load it at SCREEN resolution
                     // (.zero) with a single high-quality delivery so it is crisp and never shows the
                     // blurry low-res placeholder (requesting the full original at maximum size with
                     // opportunistic delivery was what left it blurry).
@@ -977,7 +841,6 @@ private struct DeckHomePage: View {
                     .frame(maxHeight: .infinity, alignment: .top)
                     .allowsHitTesting(false)
             )
-            .opacity(affordanceOpacity)
         }
         .frame(width: width, height: height, alignment: .top)
         .clipShape(UnevenRoundedRectangle(topLeadingRadius: 28, bottomLeadingRadius: 0,
@@ -992,65 +855,14 @@ private struct DeckHomePage: View {
         }
         .shadow(color: .black.opacity(0.5), radius: 22, y: -8)
         .contentShape(Rectangle())
-        // Tap-to-open (build 36): a tap on the peek opens via the SAME fixed glide as a swipe,
-        // seeded from the peek (progress 0) so it runs the full calm easeInOut. The full-page
-        // `revealGesture` still owns swipes from anywhere; this just makes the obvious affordance
-        // tappable too. minimumDistance on the drag keeps a tap from also starting a drag.
+        // A tap on the obvious affordance advances to the first photo with a normal animated
+        // scroll. Swipes are owned by the outer paging ScrollView (native paging), so a swipe up
+        // anywhere on home pages to the first photo with the same physics as photo → photo.
         .onTapGesture {
-            guard !revealing else { return }
             onInteract()
-            completeReveal(fromProgress: 0)
+            onAdvance()
         }
     }
-
-    /// Swipe-up reveal, attached to the WHOLE home page (full screen, natural position) so a
-    /// drag anywhere — over the mosaic, the middle, or the peek photo — starts the expansion.
-    /// `minimumDistance` keeps taps clean: a tap (no real movement) never starts this gesture,
-    /// so it passes straight through to the mosaic tile `Button`s, while a real upward drag
-    /// drives the reveal. The layer sits un-offset at its natural rect, so its hit region is
-    /// correct and only the tap-vs-drag distinction separates it from the tile buttons.
-    private var revealGesture: some Gesture {
-        DragGesture(minimumDistance: 14)
-            .updating($dragOffset) { value, state, _ in
-                guard !revealing else { return }
-                state = max(value.translation.height, -pullDistance)
-            }
-            .onChanged { value in
-                // IN-DRAG TRIGGER (build 36): the instant the user clearly intends to open — a
-                // modest upward pull OR an upward flick velocity — fire the fixed glide and STOP
-                // tracking the finger. This is what decouples the open from flick speed: a fast
-                // flick trips the trigger almost immediately, but the open is still the calm
-                // easeInOut glide, never a finger-driven shoot-up. We seed the glide from the
-                // current DAMPED live reveal so the handoff is continuous.
-                guard !revealing else { return }
-                let up = -value.translation.height
-                let upVelocity = -value.predictedEndTranslation.height + value.translation.height
-                let pulledEnough = up >= revealTriggerDistance
-                let flickedEnough = up >= 18 && upVelocity >= revealTriggerVelocity
-                guard pulledEnough || flickedEnough else { return }
-                onInteract()
-                let seed = min(max(up / pullDistance, 0), 1) * revealTrackRatio
-                completeReveal(fromProgress: seed)
-            }
-            .onEnded { value in
-                // Fallback for a slow drag that never tripped the in-drag trigger: a release past
-                // the distance threshold still opens, via the SAME fixed glide.
-                guard !revealing else { return }
-                let up = -value.translation.height
-                let progress = min(max(up / pullDistance, 0), 1)
-                if progress > pullThreshold {
-                    onInteract()
-                    completeReveal(fromProgress: progress * revealTrackRatio)
-                }
-            }
-    }
-}
-
-/// Carries the home page's global top-edge position out of its GeometryReader so the page can
-/// detect when it has settled back at rest (top edge ~0) and reset itself.
-private struct HomeRestKey: PreferenceKey {
-    static var defaultValue: CGFloat = .greatestFiniteMagnitude
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 // MARK: - End-of-day summary
@@ -1145,12 +957,13 @@ private struct DeckEndPage: View {
 }
 
 // MARK: - Moment scrubber
-// One stop set (every burst). The track always shows year ticks + burst sublines.
-// Speed only gates the OVERLAY: fast = year only, slow = year + the burst preview.
+// One stop set = the real Moments only (home/end bookends excluded as of build 39). The track
+// always shows year ticks + burst sublines. Speed only gates the OVERLAY: fast = year only,
+// slow = year + the burst preview.
 
 private struct BurstScrubber: View {
     let bursts: [Burst]
-    let stops: [Int]         // every Moment + home/end caps — the single stop set
+    let stops: [Int]         // every real Moment (no home/end caps) — the single stop set
     let currentBurstIndex: Int
     let service: PhotoLibraryService
     let onScrub: (Int) -> Void
@@ -1446,7 +1259,18 @@ struct MemoryControlsBar: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Text("On this day").font(.headline).foregroundStyle(tint)
+            // Masthead: a quiet, letter-spaced "ENCORE" wordmark sits above the section title, the way
+            // a magazine sets its name over a department head. Low-contrast serif small caps so it
+            // reads as the app's signature without competing with the photos or the controls. It lives
+            // in the persistent bar, so it appears identically on every page and never moves.
+            // To remove or tune: delete the ENCORE Text line, or adjust size/tracking/opacity below.
+            VStack(alignment: .leading, spacing: 1) {
+                Text("ENCORE")
+                    .font(.system(size: 10, weight: .semibold, design: .serif))
+                    .tracking(2.5)
+                    .foregroundStyle(tint.opacity(0.5))
+                Text("On this day").font(.headline).foregroundStyle(tint)
+            }
             Spacer()
             iconButton(mode == .deck ? "square.grid.2x2" : "rectangle.stack") {
                 withAnimation(.snappy) { mode = (mode == .deck ? .gallery : .deck) }
