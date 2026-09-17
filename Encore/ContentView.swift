@@ -57,6 +57,7 @@ struct ContentView: View {
             // The bar must visibly fill to 100% before home appears: it watches `loadingFinished`
             // (data ready), eases to full, then calls `finalizeHandoff()` to swap to home (build 43).
             LoadingView(dateString: Self.todayString,
+                        backdrop: service.loadingBackdrop,
                         isFinishing: service.loadingFinished,
                         onFinished: { service.finalizeHandoff() })
         }
@@ -169,6 +170,10 @@ private struct MemoriesView: View {
 /// changing.
 private struct LoadingView: View {
     let dateString: String
+    /// One of the user's own photos from this day (build 49, MAR-41), or nil for the stock picture.
+    /// Normally present from the first frame; on a cache miss it may arrive a moment into the load
+    /// and fades in once over the stock photo.
+    let backdrop: UIImage?
     /// Flips true the instant the data is ready (and the minimum beat has passed). The bar then eases
     /// the rest of the way to a full 100% and, once it reads full, calls `onFinished`.
     let isFinishing: Bool
@@ -200,6 +205,22 @@ private struct LoadingView: View {
                         .ignoresSafeArea()
                 )
 
+            if let backdrop {
+                // Same blur and scrim as the stock picture, so the two states read identically.
+                // Color.clear carries the layout so an odd aspect ratio can never widen the screen.
+                Color.clear
+                    .overlay(Image(uiImage: backdrop).resizable().scaledToFill())
+                    .clipped()
+                    .ignoresSafeArea()
+                    .blur(radius: 5)
+                    .overlay(
+                        LinearGradient(colors: [.black.opacity(0.25), .black.opacity(0.55)],
+                                       startPoint: .top, endPoint: .bottom)
+                            .ignoresSafeArea()
+                    )
+                    .transition(.opacity)
+            }
+
             VStack(spacing: 12) {
                 Spacer()
                 Text("Finding your memories")
@@ -216,6 +237,7 @@ private struct LoadingView: View {
                 Spacer().frame(height: 120)
             }
         }
+        .animation(.easeInOut(duration: 0.35), value: backdrop != nil)
         .overlay(alignment: .bottom) {
             // Build number, unmissable on every launch, so it's always obvious which build is
             // actually installed (the home-screen version tag can sit behind the peek card).

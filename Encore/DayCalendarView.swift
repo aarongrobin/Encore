@@ -1,16 +1,14 @@
 import SwiftUI
 
-/// The manual date selector (build 48, MAR-48). A calendar of the past twelve months that shows
-/// which days the user has already flipped through (filled) and which they missed (plain). Tapping
-/// any day up to today re-aims the whole app at that date, so a missed day can be caught up.
-/// Completed days stay tappable too, for a second look. Future days are disabled: those memories
-/// arrive on their own day.
+/// The manual date selector (build 48, MAR-48; simplified in build 49). Twelve months, the current
+/// one on top, scrolling back in time. It is a date picker, not a streak view (Aaron, 09-17): no
+/// years, no looked-back/missed marks. Tapping any day up to today re-aims the whole app at that
+/// date. Future days are disabled: those memories arrive on their own day.
 struct DayCalendarView: View {
     let service: PhotoLibraryService
     @Environment(\.dismiss) private var dismiss
 
     private let calendar = Calendar.current
-    private let completed = PreferenceStore.shared.completedDayKeys
     private let viewingKey = MemoryDay.key(for: MemoryDay.current)
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 4), count: 7)
 
@@ -26,7 +24,6 @@ struct DayCalendarView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 28) {
-                        legend
                         ForEach(months, id: \.self) { month in
                             monthSection(month).id(month)
                         }
@@ -35,7 +32,7 @@ struct DayCalendarView: View {
                     .padding(.vertical, 16)
                 }
                 // The current month is already at the top. Only jump when a day from an earlier
-                // month is on screen, so the legend stays visible in the common case.
+                // month is on screen.
                 .onAppear {
                     let target = calendar.date(from: calendar.dateComponents([.year, .month], from: MemoryDay.current))
                     if let target, target != months.first { proxy.scrollTo(target, anchor: .top) }
@@ -56,28 +53,8 @@ struct DayCalendarView: View {
         }
     }
 
-    private var legend: some View {
-        HStack(spacing: 16) {
-            legendItem(filled: true, "Looked back")
-            legendItem(filled: false, "Missed")
-            Spacer()
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-    }
-
-    private func legendItem(filled: Bool, _ label: String) -> some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(filled ? Color.accentColor : Color.clear)
-                .overlay(Circle().strokeBorder(Color.secondary.opacity(filled ? 0 : 0.5), lineWidth: 1))
-                .frame(width: 12, height: 12)
-            Text(label)
-        }
-    }
-
     private func monthSection(_ month: Date) -> some View {
-        let formatter = DateFormatter(); formatter.dateFormat = "MMMM yyyy"
+        let formatter = DateFormatter(); formatter.dateFormat = "MMMM"
         return VStack(alignment: .leading, spacing: 10) {
             Text(formatter.string(from: month))
                 .font(.system(.title3, design: .serif).weight(.semibold))
@@ -97,38 +74,35 @@ struct DayCalendarView: View {
     private func dayCell(_ day: Date) -> some View {
         let key = MemoryDay.key(for: day)
         let isFuture = day > Date()
-        let isDone = completed.contains(key)
         let isToday = calendar.isDateInToday(day)
         let isViewing = key == viewingKey
 
         return Button { pick(day) } label: {
             Text("\(calendar.component(.day, from: day))")
                 .font(.callout.weight(isToday || isViewing ? .bold : .regular))
-                .foregroundStyle(isDone ? Color.white : (isFuture ? Color.secondary.opacity(0.4) : Color.primary))
+                .foregroundStyle(isViewing ? Color.white : (isFuture ? Color.secondary.opacity(0.4) : Color.primary))
                 .frame(maxWidth: .infinity)
                 .frame(height: 40)
                 .background {
-                    Circle().fill(isDone ? Color.accentColor : Color.clear)
+                    // The day on screen is filled; today (when it is not the one on screen) is ringed.
+                    Circle().fill(isViewing ? Color.accentColor : Color.clear)
                 }
                 .overlay {
-                    // Today gets a quiet ring; the day on screen gets a strong one.
-                    if isViewing {
-                        Circle().strokeBorder(Color.primary, lineWidth: 2)
-                    } else if isToday {
+                    if isToday && !isViewing {
                         Circle().strokeBorder(Color.accentColor.opacity(0.7), lineWidth: 1.5)
                     }
                 }
         }
         .buttonStyle(.plain)
         .disabled(isFuture)
-        .accessibilityLabel(accessibilityLabel(day, done: isDone, today: isToday))
+        .accessibilityLabel(accessibilityLabel(day, viewing: isViewing, today: isToday))
     }
 
-    private func accessibilityLabel(_ day: Date, done: Bool, today: Bool) -> String {
-        let formatter = DateFormatter(); formatter.dateStyle = .long
+    private func accessibilityLabel(_ day: Date, viewing: Bool, today: Bool) -> String {
+        let formatter = DateFormatter(); formatter.dateFormat = "MMMM d"
         var label = formatter.string(from: day)
         if today { label += ", today" }
-        label += done ? ", looked back" : ", not viewed"
+        if viewing { label += ", showing now" }
         return label
     }
 

@@ -45,9 +45,23 @@ final class PhotoLibraryService: ObservableObject {
     private let calendarService = CalendarService()
     private let yearsToSearch = 30
 
+    /// The personal loading backdrop (build 49, MAR-41): one of the user's own photos from the day
+    /// being loaded, or nil to fall back to the bundled stock picture. Read from the prepared cache
+    /// in `init`, so on a normal launch it is on screen from the first frame. See `LoadingBackdrop`.
+    @Published private(set) var loadingBackdrop: UIImage?
+    /// Which day (`LoadingBackdrop.key`) the current backdrop belongs to.
+    private var backdropKey: String?
+    /// A live pick that lands later than this into a load is dropped: a late picture swap is worse
+    /// than finishing the load on the stock photo.
+    private let backdropSwapWindow: TimeInterval = 0.8
+
     init() {
         calendarAuthorized = calendarService.isAuthorized
         reminderEnabled = PreferenceStore.shared.dailyReminderEnabled
+        if let cached = LoadingBackdrop.cached(for: MemoryDay.current) {
+            loadingBackdrop = cached
+            backdropKey = LoadingBackdrop.key(for: MemoryDay.current)
+        }
     }
 
     // MARK: - Authorization
@@ -195,7 +209,26 @@ final class PhotoLibraryService: ObservableObject {
         peekHeroImage = nil
         peekHeroAssetID = nil
         momentPlaces = [:]
-        loadMemories()
+
+        // Settle the backdrop BEFORE the loading screen appears, so a picked day opens on its own
+        // photo with no swap (MAR-41). The cache answers at once; a miss gets a short live pick,
+        // capped so a slow library can never stall the reload.
+        let target = MemoryDay.current
+        let key = LoadingBackdrop.key(for: target)
+        var begun = false
+        let begin: (UIImage?) -> Void = { [weak self] image in
+            guard let self, !begun else { return }
+            begun = true
+            self.loadingBackdrop = image
+            self.backdropKey = key
+            self.loadMemories()
+        }
+        if let cached = LoadingBackdrop.cached(for: target) {
+            begin(cached)
+        } else {
+            LoadingBackdrop.pickRandom(for: target) { begin($0) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { begin(nil) }
+        }
     }
 
     func loadMemories() {
@@ -203,6 +236,21 @@ final class PhotoLibraryService: ObservableObject {
         loadingFinished = false
         pendingMemories = nil
         loadStartedAt = Date()
+
+        // Cache miss on a cold launch (first install, or a gap longer than the prepared week): pick
+        // live. The stock photo is already up; the personal one fades in once if it lands quickly.
+        let dayKey = LoadingBackdrop.key(for: MemoryDay.current)
+        if backdropKey != dayKey {
+            backdropKey = dayKey
+            loadingBackdrop = nil
+            let startedAt = loadStartedAt
+            LoadingBackdrop.pickRandom(for: MemoryDay.current) { [weak self] image in
+                guard let self, let image, self.backdropKey == dayKey,
+                      case .loading = self.state,
+                      Date().timeIntervalSince(startedAt) < self.backdropSwapWindow else { return }
+                self.loadingBackdrop = image
+            }
+        }
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
@@ -344,6 +392,11 @@ final class PhotoLibraryService: ObservableObject {
         let ordered = deckOrderedAssets(usable)
         startCaching(for: Array(ordered.dropFirst(deckWarmCount)))
         resolvePlaceNames(for: usable)
+        // Prepare the next week of loading backdrops (MAR-41). Only from a real "today" load, so
+        // today's pool is today's visible photos.
+        if MemoryDay.isToday {
+            LoadingBackdrop.prepareUpcoming(todayCandidates: usable.flatMap { $0.visiblePhotos.map(\.asset) })
+        }
     }
 
     /// Number of deck photos to warm at full-screen size during the loading screen (build 36). A

@@ -1262,6 +1262,7 @@ struct MemoryControlsBar: View {
     private var tint: Color { dark ? .white : .primary }
 
     var body: some View {
+        VStack(spacing: 10) {
         HStack(spacing: 10) {
             // Masthead: a quiet, letter-spaced "ENCORE" wordmark sits above the section title, the way
             // a magazine sets its name over a department head. Low-contrast serif small caps so it
@@ -1315,6 +1316,8 @@ struct MemoryControlsBar: View {
                 iconLabel("ellipsis")
             }
         }
+        if !service.isViewingToday { pickedDayStrip }
+        }
         .padding(.horizontal, 18)
         .padding(.top, 8)
         #if DEBUG
@@ -1330,6 +1333,29 @@ struct MemoryControlsBar: View {
         .sheet(isPresented: $showCalendar) {
             DayCalendarView(service: service)
         }
+    }
+
+    /// The "this is not today" marker (build 49, MAR-48). An accent-colored strip under the title
+    /// row whenever a day was picked from the calendar. It lives in the persistent bar, so it shows
+    /// on home, on every photo, and in the gallery, and the whole strip is the way back to today.
+    private var pickedDayStrip: some View {
+        let f = DateFormatter(); f.dateFormat = "MMMM d"
+        return Button { service.load(day: nil) } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "calendar")
+                Text("Viewing \(f.string(from: MemoryDay.current))")
+                Spacer(minLength: 8)
+                Text("Back to today")
+                Image(systemName: "arrow.uturn.backward")
+            }
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14)
+            .frame(height: 34)
+            .background(Color.accentColor, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Viewing \(f.string(from: MemoryDay.current)). Back to today")
     }
 
     /// The persistent hidden-photos badge (build 48, MAR-47). It lives in the top bar, so it is on
