@@ -1,11 +1,8 @@
 Thanks for trying Encore! It shows the photos you took on this date in past years.
 
 Try these:
-1. Swipe up from the bottom photo and flip through your years.
-2. Tap a photo and share the framed card.
-3. Tap the "hidden" pill at the top. Did it hide anything you wanted?
-4. Open the ... menu, tap "Choose a day", and pick a date with lots of photos.
-
-Today looks sparse? Use "Choose a day".
+1. Tap a photo and share the framed card.
+2. Tap the "hidden" pill at the top. Did it hide anything you wanted?
+3. Open the ... menu, tap "Choose a day", and pick a date with lots of photos.
 
 Feedback: TestFlight > Send Beta Feedback, or text me. Screenshots help.
