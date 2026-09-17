@@ -19,6 +19,10 @@ final class PreferenceStore {
         static let onboardingComplete = "onboardingComplete"
         static let likedAssets = "likedAssetIDs"
         static let notificationPromptShown = "notificationPromptShown"
+        static let installDate = "installDate"
+        static let hiddenIntroShown = "hiddenIntroShown"
+        static let hiddenReviewOpened = "hiddenReviewOpened"
+        static let hiddenCheckInsShown = "hiddenCheckInsShown"
     }
 
     // MARK: Liked photos (local only — we store the asset identifier, never the photo)
@@ -70,20 +74,63 @@ final class PreferenceStore {
 
     private static let dayLogKey = "memoryDayLogDates"
 
+    /// Logs the day being viewed, so catching up on a missed day through the date selector fills
+    /// in that day on the calendar rather than today (build 48, MAR-48).
     func recordDayCompleted() {
         var dates = Set(defaults.stringArray(forKey: Self.dayLogKey) ?? [])
-        dates.insert(Self.todayKey())
+        dates.insert(MemoryDay.key(for: MemoryDay.current))
         defaults.set(Array(dates), forKey: Self.dayLogKey)
+    }
+
+    /// "yyyy-MM-dd" keys of every day the user has flipped through to the end.
+    var completedDayKeys: Set<String> {
+        Set(defaults.stringArray(forKey: Self.dayLogKey) ?? [])
     }
 
     var dayLogCount: Int {
         (defaults.stringArray(forKey: Self.dayLogKey) ?? []).count
     }
 
-    private static func todayKey() -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: Date())
+    // MARK: Hidden-photos awareness (build 48, MAR-47)
+
+    /// First launch date. Anchors the hidden-photos check-ins. Stamped on first read, so installs
+    /// that predate build 48 start their clock at the first launch of this build.
+    var installDate: Date {
+        if let stored = defaults.object(forKey: Keys.installDate) as? Date { return stored }
+        let now = Date()
+        defaults.set(now, forKey: Keys.installDate)
+        return now
+    }
+
+    /// Whether the one-time "we set some photos aside" intro has been shown.
+    var hiddenIntroShown: Bool {
+        get { defaults.bool(forKey: Keys.hiddenIntroShown) }
+        set { defaults.set(newValue, forKey: Keys.hiddenIntroShown) }
+    }
+
+    /// True once the user has opened the hidden-photos review at least once. The on-screen badge
+    /// drops from its prompting state to its quiet state after this.
+    var hiddenReviewOpened: Bool {
+        get { defaults.bool(forKey: Keys.hiddenReviewOpened) }
+        set { defaults.set(newValue, forKey: Keys.hiddenReviewOpened) }
+    }
+
+    /// Days after install at which Encore reminds people that it hides photos.
+    static let hiddenCheckInDays = [9, 36, 72]
+
+    /// The latest check-in milestone that has come due and not been shown yet, or nil. Returning
+    /// only the latest means someone who opens the app on day 80 gets one reminder, not three.
+    var dueHiddenCheckIn: Int? {
+        let days = Calendar.current.dateComponents([.day], from: installDate, to: Date()).day ?? 0
+        let shown = Set(defaults.array(forKey: Keys.hiddenCheckInsShown) as? [Int] ?? [])
+        return Self.hiddenCheckInDays.last { days >= $0 && !shown.contains($0) }
+    }
+
+    /// Marks `milestone` and every earlier one as shown.
+    func markHiddenCheckInShown(_ milestone: Int) {
+        let shown = Self.hiddenCheckInDays.filter { $0 <= milestone }
+        let existing = defaults.array(forKey: Keys.hiddenCheckInsShown) as? [Int] ?? []
+        defaults.set(Array(Set(existing).union(shown)), forKey: Keys.hiddenCheckInsShown)
     }
 
     // MARK: Per-photo overrides (user decision beats the model)

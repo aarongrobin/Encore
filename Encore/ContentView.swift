@@ -28,6 +28,13 @@ struct ContentView: View {
             }
         }
         .onAppear {
+            #if DEBUG
+            // Simulator verification hook: `-debugDay 2026-09-10` opens on a picked day.
+            if let raw = UserDefaults.standard.string(forKey: "debugDay") {
+                let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"
+                MemoryDay.select(f.date(from: raw))
+            }
+            #endif
             if !showOnboarding, case .idle = service.state { service.start() }
         }
         .onChange(of: scenePhase) { _, phase in
@@ -41,7 +48,9 @@ struct ContentView: View {
         case .denied:
             PermissionDeniedView()
         case .empty:
-            EmptyMemoriesView(dateString: Self.todayString)
+            EmptyMemoriesView(dateString: Self.todayString,
+                              isToday: service.isViewingToday,
+                              onBackToToday: { service.load(day: nil) })
         default:
             // The startup sequence: one beautiful bundled stock photo, blurred, under a progress bar
             // that advances across the wait. No preview of the user's own photos (build 42, MAR-41).
@@ -56,7 +65,7 @@ struct ContentView: View {
     static var todayString: String {
         let formatter = DateFormatter()
         formatter.dateFormat = "EEEE, MMMM d"
-        return formatter.string(from: Date())
+        return formatter.string(from: MemoryDay.current)
     }
 }
 
@@ -70,6 +79,8 @@ private struct MemoriesView: View {
     @State private var showHidden = false
     @State private var showNotificationOptIn = false
     @State private var optInChecked = false
+    /// The hidden-photos intro / check-in sheet (build 48, MAR-47). Non-nil while presented.
+    @State private var hiddenPrompt: HiddenPhotosPrompt?
 
     private var allHidden: [MemoryPhoto] { memories.flatMap { $0.hiddenPhotos } }
 
@@ -88,7 +99,22 @@ private struct MemoriesView: View {
             HiddenPhotosView(hiddenPhotos: allHidden, service: service)
         }
         .sheet(isPresented: $showNotificationOptIn) {
-            NotificationOptInView(service: service) { showNotificationOptIn = false }
+            NotificationOptInView(service: service) {
+                showNotificationOptIn = false
+                // MAR-47: the hidden-photos intro follows the reminder choice, once that sheet
+                // has finished sliding away.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { offerHiddenPrompt() }
+            }
+        }
+        .sheet(item: $hiddenPrompt) { prompt in
+            HiddenPhotosPromptView(prompt: prompt) {
+                // Let this sheet finish dismissing before the review sheet comes up.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { openHiddenReview() }
+            }
+            .presentationDetents([.medium])
+        }
+        .onChange(of: showHidden) { _, showing in
+            if showing { PreferenceStore.shared.hiddenReviewOpened = true }
         }
         .onAppear {
             // First open only (MAR-45): once the memories are up, offer the daily-reminder opt-in.
@@ -102,7 +128,30 @@ private struct MemoriesView: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
                     showNotificationOptIn = true
                 }
+            } else {
+                // Reminder already decided (every existing install): go straight to the hidden-photos
+                // intro or a due check-in, after the same settle beat.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { offerHiddenPrompt() }
             }
+        }
+    }
+
+    private func openHiddenReview() { showHidden = true }
+
+    /// Show the one-time hidden-photos intro, or a day 9 / 36 / 72 check-in if one has come due
+    /// (build 48, MAR-47). Does nothing on a day with no hidden photos, and leaves the flags unset
+    /// so the prompt waits for a day that has something to review. Skipped while another sheet is up.
+    private func offerHiddenPrompt() {
+        let count = allHidden.count
+        guard count > 0, hiddenPrompt == nil, !showHidden, !showNotificationOptIn else { return }
+        let store = PreferenceStore.shared
+        _ = store.installDate   // stamp the check-in clock on first run
+        if !store.hiddenIntroShown {
+            store.hiddenIntroShown = true
+            hiddenPrompt = HiddenPhotosPrompt(kind: .intro, count: count)
+        } else if let milestone = store.dueHiddenCheckIn {
+            store.markHiddenCheckInShown(milestone)
+            hiddenPrompt = HiddenPhotosPrompt(kind: .checkIn, count: count)
         }
     }
 }
@@ -141,7 +190,9 @@ private struct LoadingView: View {
                 .resizable()
                 .scaledToFill()
                 .ignoresSafeArea()
-                .blur(radius: 12)
+                // Radius 5 (build 48, MAR-41: "still too blurry" at 12). Reads as a real photograph
+                // with a soft-focus finish; the scrim below carries text legibility on its own.
+                .blur(radius: 5)
                 .overlay(
                     // A bottom-weighted scrim keeps the text legible over the blur.
                     LinearGradient(colors: [.black.opacity(0.25), .black.opacity(0.55)],
@@ -261,11 +312,21 @@ private struct LoadingProgressBar: View {
 
 private struct EmptyMemoriesView: View {
     let dateString: String
+    var isToday = true
+    var onBackToToday: () -> Void = {}
     var body: some View {
         ContentUnavailableView {
             Label("No memories yet", systemImage: "photo.on.rectangle.angled")
         } description: {
-            Text("You don't have any photos from \(dateString) in past years. Check back tomorrow.")
+            Text(isToday
+                 ? "You don't have any photos from \(dateString) in past years. Check back tomorrow."
+                 : "You don't have any photos from \(dateString) in past years.")
+        } actions: {
+            // A picked day with nothing on it (MAR-48) needs a way home.
+            if !isToday {
+                Button("Back to today", action: onBackToToday)
+                    .buttonStyle(.borderedProminent)
+            }
         }
     }
 }

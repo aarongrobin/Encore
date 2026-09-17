@@ -36,18 +36,18 @@ struct YearMemory: Identifiable {
         visiblePhotos.max { $0.score.score < $1.score.score }
     }
 
-    var yearsAgo: Int { Calendar.current.component(.year, from: Date()) - year }
+    var yearsAgo: Int { Calendar.current.component(.year, from: MemoryDay.current) - year }
 
     var headline: String {
-        yearsAgo == 1 ? "1 year ago today" : "\(yearsAgo) years ago today"
+        MemoryDay.yearsAgoText(yearsAgo)
     }
 
     var fullDateString: String {
         let cal = Calendar.current
         var comps = DateComponents()
         comps.year = year
-        comps.month = cal.component(.month, from: Date())
-        comps.day = cal.component(.day, from: Date())
+        comps.month = cal.component(.month, from: MemoryDay.current)
+        comps.day = cal.component(.day, from: MemoryDay.current)
         let date = cal.date(from: comps) ?? Date()
         let formatter = DateFormatter()
         formatter.dateFormat = "MMMM d, yyyy"

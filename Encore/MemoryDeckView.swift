@@ -50,12 +50,12 @@ func appVersionString() -> String {
 /// Caption for a photo identified only by its year (used by the tap-to-share galleries).
 func momentCaption(forYear year: Int) -> MomentCaption {
     let cal = Calendar.current
-    let yearsAgo = cal.component(.year, from: Date()) - year
-    let yearsText = yearsAgo == 1 ? "1 year ago today" : "\(yearsAgo) years ago today"
+    let yearsAgo = cal.component(.year, from: MemoryDay.current) - year
+    let yearsText = MemoryDay.yearsAgoText(yearsAgo)
     var comps = DateComponents()
     comps.year = year
-    comps.month = cal.component(.month, from: Date())
-    comps.day = cal.component(.day, from: Date())
+    comps.month = cal.component(.month, from: MemoryDay.current)
+    comps.day = cal.component(.day, from: MemoryDay.current)
     let date = cal.date(from: comps) ?? Date()
     let formatter = DateFormatter(); formatter.dateFormat = "MMMM d, yyyy"
     return MomentCaption(yearsAgoText: yearsText, dateText: formatter.string(from: date), placeText: nil)
@@ -157,7 +157,7 @@ struct MemoryDeckView: View {
     private var bestPhotoOverall: MemoryPhoto? { allVisible.max { $0.score.score < $1.score.score } }
     private var placeCount: Int { Set(memories.compactMap { $0.placeName }).count }
     private var dateLine: String {
-        let f = DateFormatter(); f.dateFormat = "MMMM d"; return f.string(from: Date())
+        let f = DateFormatter(); f.dateFormat = "MMMM d"; return f.string(from: MemoryDay.current)
     }
     private var mosaicTiles: [(asset: PHAsset, year: Int)] {
         allMoments.prefix(12).compactMap { m in m.best.map { (asset: $0.asset, year: m.year) } }
@@ -178,7 +178,7 @@ struct MemoryDeckView: View {
         let f = DateFormatter(); f.dateFormat = "EEEE, MMMM d"
         let yc = memories.count
         return VStack(alignment: .leading, spacing: 3) {
-            Text(f.string(from: Date()))
+            Text(f.string(from: MemoryDay.current))
                 .font(.system(size: 30, design: .serif).weight(.semibold))
                 .foregroundStyle(.white)
                 .minimumScaleFactor(0.7)
@@ -1254,6 +1254,10 @@ struct MemoryControlsBar: View {
 
     @State private var showReminder = false
     @State private var showFavorites = false
+    @State private var showCalendar = false
+    /// Mirrors `PreferenceStore.hiddenReviewOpened` so the badge can drop to its quiet state the
+    /// moment the review opens (build 48, MAR-47).
+    @State private var hiddenReviewOpened = PreferenceStore.shared.hiddenReviewOpened
 
     private var tint: Color { dark ? .white : .primary }
 
@@ -1272,10 +1276,21 @@ struct MemoryControlsBar: View {
                 Text("On this day").font(.headline).foregroundStyle(tint)
             }
             Spacer()
+            if hiddenCount > 0 { hiddenBadge }
             iconButton(mode == .deck ? "square.grid.2x2" : "rectangle.stack") {
                 withAnimation(.snappy) { mode = (mode == .deck ? .gallery : .deck) }
             }
             Menu {
+                Button {
+                    showCalendar = true
+                } label: {
+                    Label("Choose a day…", systemImage: "calendar.badge.clock")
+                }
+                if !service.isViewingToday {
+                    Button { service.load(day: nil) } label: {
+                        Label("Back to today", systemImage: "arrow.uturn.backward")
+                    }
+                }
                 Button {
                     showFavorites = true
                 } label: {
@@ -1302,12 +1317,43 @@ struct MemoryControlsBar: View {
         }
         .padding(.horizontal, 18)
         .padding(.top, 8)
+        #if DEBUG
+        // Simulator verification hook: `-debugShowCalendar YES` opens the day picker on launch.
+        .onAppear { if UserDefaults.standard.bool(forKey: "debugShowCalendar") { showCalendar = true } }
+        #endif
         .sheet(isPresented: $showReminder) {
             ReminderSettingsView(service: service)
         }
         .sheet(isPresented: $showFavorites) {
             FavoritesView(service: service)
         }
+        .sheet(isPresented: $showCalendar) {
+            DayCalendarView(service: service)
+        }
+    }
+
+    /// The persistent hidden-photos badge (build 48, MAR-47). It lives in the top bar, so it is on
+    /// every page and never moves. Until the first review it spells out "N hidden" to prompt a look;
+    /// after that it shrinks to the eye icon plus the count, the same height as the round buttons
+    /// beside it. Absent on a day with nothing hidden.
+    private var hiddenBadge: some View {
+        Button {
+            hiddenReviewOpened = true
+            onReviewHidden()
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "eye.slash")
+                    .font(.system(size: 12, weight: .semibold))
+                Text(hiddenReviewOpened ? "\(hiddenCount)" : "\(hiddenCount) hidden")
+                    .font(.caption.weight(.semibold))
+                    .monospacedDigit()
+            }
+            .foregroundStyle(tint.opacity(hiddenReviewOpened ? 0.75 : 1))
+            .padding(.horizontal, 11)
+            .frame(height: 38)
+            .background(.ultraThinMaterial, in: Capsule())
+        }
+        .accessibilityLabel("Review \(hiddenCount) hidden \(hiddenCount == 1 ? "photo" : "photos")")
     }
 
     private func iconButton(_ name: String, action: @escaping () -> Void) -> some View {

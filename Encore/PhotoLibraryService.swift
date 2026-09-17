@@ -182,6 +182,22 @@ final class PhotoLibraryService: ObservableObject {
 
     // MARK: - Loading
 
+    /// The day currently on screen (build 48, MAR-48). Mirrors `MemoryDay.current` as a published
+    /// value so the menu and home chrome can react to a manual date pick.
+    @Published private(set) var viewingDate: Date = MemoryDay.current
+    var isViewingToday: Bool { MemoryDay.isToday }
+
+    /// Re-aim the app at another calendar day (nil = back to today) and reload. Runs the same
+    /// loading screen and gate as a cold launch, so a picked day opens wait-free too.
+    func load(day: Date?) {
+        MemoryDay.select(day)
+        viewingDate = MemoryDay.current
+        peekHeroImage = nil
+        peekHeroAssetID = nil
+        momentPlaces = [:]
+        loadMemories()
+    }
+
     func loadMemories() {
         state = .loading
         loadingFinished = false
@@ -193,7 +209,7 @@ final class PhotoLibraryService: ObservableObject {
             self.locationResolver.ensureHomeComputed()
 
             let calendar = Calendar.current
-            let today = Date()
+            let today = MemoryDay.current
             let currentYear = calendar.component(.year, from: today)
             let month = calendar.component(.month, from: today)
             let day = calendar.component(.day, from: today)

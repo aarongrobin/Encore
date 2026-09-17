@@ -54,7 +54,7 @@ struct MomentSharePicker: View {
     }
 
     private var spanText: String {
-        let current = Calendar.current.component(.year, from: Date())
+        let current = Calendar.current.component(.year, from: MemoryDay.current)
         let oldest = moments.map { $0.year }.min() ?? current
         let span = max(1, current - oldest)
         return span <= 1 ? "Memories from this day" : "Memories over the past \(span) years"
@@ -79,14 +79,14 @@ struct MomentSharePicker: View {
     }
 
     private func caption(for moment: Moment) -> MomentCaption {
-        let yearsAgo = Calendar.current.component(.year, from: Date()) - moment.year
-        let yearsText = yearsAgo == 1 ? "1 year ago today" : "\(yearsAgo) years ago today"
+        let yearsAgo = Calendar.current.component(.year, from: MemoryDay.current) - moment.year
+        let yearsText = MemoryDay.yearsAgoText(yearsAgo)
 
         let cal = Calendar.current
         var comps = DateComponents()
         comps.year = moment.year
-        comps.month = cal.component(.month, from: Date())
-        comps.day = cal.component(.day, from: Date())
+        comps.month = cal.component(.month, from: MemoryDay.current)
+        comps.day = cal.component(.day, from: MemoryDay.current)
         let date = cal.date(from: comps) ?? Date()
         let formatter = DateFormatter(); formatter.dateFormat = "MMMM d, yyyy"
 

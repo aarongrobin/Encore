@@ -71,7 +71,7 @@ final class CalendarService {
         defaults.synchronize()
 
         let calendar = Calendar.current
-        let now = Date()
+        let now = MemoryDay.current
         let month = calendar.component(.month, from: now)
         let day = calendar.component(.day, from: now)
         let currentYear = calendar.component(.year, from: now)
