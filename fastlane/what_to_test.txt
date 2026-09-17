@@ -1,0 +1,9 @@
+Thanks for trying Encore. A few things to look at:
+- The opening: the loading screen now shows one of your own photos from this day, blurred. Then swipe up from the bouncing photo at the bottom to start flipping through your memories.
+- Flipping through: swipe up and down between photos and years. Does it feel smooth and natural?
+- Sharing: tap a photo and try sharing the framed card to Messages or anywhere else.
+- Hidden photos: Encore sets aside screenshots and documents. Look for the small "hidden" pill at the top, open it, and tell me if it hid anything you wanted to see.
+- Pick a day: open the ... menu, tap "Choose a day", and pick a date you know you took a lot of photos. The orange strip at the top takes you back to today.
+- Tell me anything that feels slow, looks off, or that you wish it did. Screenshots help. Use the "Send Beta Feedback" option in TestFlight, or just text me.
+
+Note: Encore only shows photos you actually took on today's date in past years, so if today looks sparse, use "Choose a day" to try a busier date.

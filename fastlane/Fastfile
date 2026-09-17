@@ -32,4 +32,34 @@ platform :ios do
 
     UI.success("Uploaded to TestFlight. Apple is now processing the build.")
   end
+
+  # Send an already-uploaded build to the external testers: adds it to the group, attaches the
+  # What to Test notes from fastlane/what_to_test.txt, and submits it for Beta App Review.
+  #   fastlane distribute build:49
+  # This reaches real people, so it is its own lane and is never chained onto `beta`.
+  desc "Distribute an uploaded build to the external tester group"
+  lane :distribute do |options|
+    build = options[:build] or UI.user_error!("Pass the build number: fastlane distribute build:49")
+    api_key = app_store_connect_api_key(
+      key_id:       ENV["ASC_KEY_ID"],
+      issuer_id:    ENV["ASC_ISSUER_ID"],
+      key_filepath: ENV["ASC_KEY_PATH"] || File.expand_path("AuthKey.p8", __dir__),
+      in_house:     false
+    )
+
+    upload_to_testflight(
+      api_key:             api_key,
+      app_identifier:      "com.aarongrobinson.encore",
+      distribute_only:     true,
+      app_platform:        "ios",
+      app_version:         "1.0",
+      build_number:        build.to_s,
+      distribute_external: true,
+      groups:              [ENV["ASC_EXTERNAL_GROUP"] || "v1 External Testers"],
+      changelog:           File.read(File.expand_path("what_to_test.txt", __dir__)),
+      notify_external_testers: true
+    )
+
+    UI.success("Build #{build} submitted for Beta App Review for the external group.")
+  end
 end
