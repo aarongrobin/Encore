@@ -113,10 +113,14 @@ struct PhotoShareView: View {
         withAnimation(.easeOut(duration: 0.15)) { card = rendered }
 
         // Write to a temp file so the share carries only the image (no caption text).
+        // MAR-55: a UNIQUE filename per render. iOS 27 Messages caches attachments by file URL,
+        // so reusing one fixed path made Share > Messages keep sending the first card it saw.
         if let rendered, let data = rendered.pngData() {
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent("Encore-memory.png")
-            try? data.write(to: url)
-            shareURL = url
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("EncoreShare", isDirectory: true)
+            if let previous = shareURL { try? FileManager.default.removeItem(at: previous) }
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let url = dir.appendingPathComponent("Encore-\(UUID().uuidString.prefix(8)).png")
+            if (try? data.write(to: url)) != nil { shareURL = url }
         }
     }
 }
