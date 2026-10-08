@@ -12,7 +12,7 @@ Goal: `fastlane beta` archives a signed Release build and uploads it to TestFlig
 - Save the downloaded file as: `fastlane/AuthKey.p8` (in this folder).
 - Copy `fastlane/.env.example` to `fastlane/.env` and fill in `ASC_KEY_ID` and `ASC_ISSUER_ID` (path can stay default).
 
-Keep `AuthKey.p8` and `.env` private. (This project is not a git repo, so nothing is committed, but still treat them like passwords.)
+Keep `AuthKey.p8` and `.env` private. Both are gitignored, so they never get committed. Still treat them like passwords.
 
 ## 3. Run it
 From the project root (`Encore - On This Day/`):

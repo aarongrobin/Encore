@@ -1,2 +1,3 @@
 Try this:
-1. Share a few different photos to Messages. Each one should send the photo you picked.
+1. The home screen name now reads "Encore".
+2. Share a few different photos to Messages. Each one should send the photo you picked.

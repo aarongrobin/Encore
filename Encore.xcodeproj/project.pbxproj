@@ -238,11 +238,11 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 50;
+				CURRENT_PROJECT_VERSION = 51;
 				DEVELOPMENT_TEAM = B2X57KKAD3;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Encore Day";
+				INFOPLIST_KEY_CFBundleDisplayName = Encore;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Encore can show you the events you had on this date in past years, like trips, concerts, and birthdays. Your calendar data never leaves your device.";
 				INFOPLIST_KEY_NSCalendarsUsageDescription = "Encore can show you the events you had on this date in past years. Your calendar data never leaves your device.";
@@ -271,11 +271,11 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 50;
+				CURRENT_PROJECT_VERSION = 51;
 				DEVELOPMENT_TEAM = B2X57KKAD3;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "Encore Day";
+				INFOPLIST_KEY_CFBundleDisplayName = Encore;
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Encore can show you the events you had on this date in past years, like trips, concerts, and birthdays. Your calendar data never leaves your device.";
 				INFOPLIST_KEY_NSCalendarsUsageDescription = "Encore can show you the events you had on this date in past years. Your calendar data never leaves your device.";
